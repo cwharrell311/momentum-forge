@@ -398,11 +398,6 @@
             color: var(--accent-purple);
         }
 
-        .signal-badge.social {
-            background: var(--accent-red-dim);
-            color: var(--accent-red);
-        }
-
         .momentum-score {
             display: flex;
             align-items: center;
@@ -578,7 +573,6 @@
         .signal-icon.revenue { background: var(--accent-blue-dim); color: var(--accent-blue); }
         .signal-icon.volume { background: var(--accent-yellow-dim); color: var(--accent-yellow); }
         .signal-icon.options { background: var(--accent-purple-dim); color: var(--accent-purple); }
-        .signal-icon.social { background: var(--accent-red-dim); color: var(--accent-red); }
 
         .signal-content h4 {
             font-size: 14px;
@@ -1083,7 +1077,7 @@
                                                 </td>
                                                 <td>
                                                     <div className="signal-badges">
-                                                        {stock.signals?.map(signal => (
+                                                        {stock.signals?.filter(s => ['earnings', 'revenue', 'volume', 'options'].includes(s)).map(signal => (
                                                             <span key={signal} className={`signal-badge ${signal}`}>
                                                                 {signal === 'earnings' && '📈'}
                                                                 {signal === 'revenue' && '💰'}
