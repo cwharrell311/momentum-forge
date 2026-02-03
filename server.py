@@ -22,8 +22,7 @@ scan_status = {
     'progress': 0,
     'message': 'Ready to scan',
     'last_scan': None,
-    'stocks_found': 0,
-    'social_enabled': True
+    'stocks_found': 0
 }
 
 
@@ -34,31 +33,29 @@ def progress_callback(message: str, progress: float):
     scan_status['progress'] = int(progress * 100)
 
 
-def run_scan_async(min_market_cap: float, include_social: bool = True):
+def run_scan_async(min_market_cap: float):
     """Run scan in background thread."""
     global scan_results, scan_status
-    
+
     scan_status['running'] = True
     scan_status['progress'] = 0
     scan_status['message'] = 'Starting scan...'
-    scan_status['social_enabled'] = include_social
-    
+
     try:
         results = screener.run_scan(
             min_market_cap_b=min_market_cap,
-            include_social=include_social,
             progress_callback=progress_callback
         )
-        
+
         scan_results = [r.to_dict() for r in results]
         scan_status['stocks_found'] = len(results)
         scan_status['last_scan'] = datetime.now().isoformat()
         scan_status['message'] = f'Scan complete. Found {len(results)} stocks.'
         scan_status['progress'] = 100
-        
+
     except Exception as e:
         scan_status['message'] = f'Error: {str(e)}'
-        
+
     finally:
         scan_status['running'] = False
 
@@ -79,22 +76,20 @@ def status():
 def start_scan():
     """Start a new scan."""
     global scan_status
-    
+
     if scan_status['running']:
         return jsonify({'error': 'Scan already in progress'}), 400
-    
+
     data = request.get_json() or {}
     min_market_cap = data.get('min_market_cap', 1.0)
-    include_social = data.get('include_social', True)
-    
+
     # Start scan in background
-    thread = threading.Thread(target=run_scan_async, args=(min_market_cap, include_social))
+    thread = threading.Thread(target=run_scan_async, args=(min_market_cap,))
     thread.start()
-    
+
     return jsonify({
-        'message': 'Scan started', 
-        'min_market_cap': min_market_cap,
-        'include_social': include_social
+        'message': 'Scan started',
+        'min_market_cap': min_market_cap
     })
 
 
@@ -163,28 +158,21 @@ def get_stats():
             'total_scanned': 0,
             'signals_found': 0,
             'high_conviction': 0,
-            'bullish_sentiment': 0,
-            'bullish_social': 0,
-            'trending': 0,
+            'bullish_options_flow': 0,
             'avg_score': 0
         })
-    
+
     high_conviction = len([r for r in scan_results if r['momentum_score'] >= 80])
     bullish_options = len([r for r in scan_results if r.get('options_volume_ratio', 0) and r['options_volume_ratio'] > 1.5])
-    bullish_social = len([r for r in scan_results if r.get('social_score', 0) > 0.2])
-    trending = len([r for r in scan_results if r.get('social_trending', False)])
     avg_score = sum(r['momentum_score'] for r in scan_results) / len(scan_results)
-    
+
     return jsonify({
-        'total_scanned': 150,  # Universe size
+        'total_scanned': len(scan_results),
         'signals_found': len(scan_results),
         'high_conviction': high_conviction,
         'bullish_options_flow': bullish_options,
-        'bullish_social': bullish_social,
-        'trending': trending,
         'avg_score': round(avg_score, 1),
-        'last_scan': scan_status.get('last_scan'),
-        'social_enabled': scan_status.get('social_enabled', True)
+        'last_scan': scan_status.get('last_scan')
     })
 
 
