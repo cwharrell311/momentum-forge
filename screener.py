@@ -86,72 +86,68 @@ class MomentumScreener:
     
     def get_universe(self, min_market_cap_b: float = 1.0) -> List[str]:
         """
-        Get list of NASDAQ/NYSE stocks above minimum market cap.
-        Fetches dynamically from FMP API.
+        Get list of stocks from S&P 500 and NASDAQ-100 indices.
+        These are the most liquid, actively traded stocks.
         """
         # Return cached universe if available
         if self._universe_cache:
             return self._universe_cache
 
-        if not self.fmp_api_key:
-            logger.warning("No FMP API key provided. Using fallback universe.")
-            # Fallback to a small set of well-known tickers
-            return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA']
-
         universe = []
-        min_market_cap = min_market_cap_b * 1e9  # Convert to actual value
 
-        try:
-            # Fetch NASDAQ stocks
-            nasdaq_url = f"{self.FMP_BASE_URL}/stock-screener?marketCapMoreThan={min_market_cap}&exchange=NASDAQ&isActivelyTrading=true&limit=1000&apikey={self.fmp_api_key}"
-            nasdaq_response = requests.get(nasdaq_url, timeout=30)
-            logger.info(f"NASDAQ API response status: {nasdaq_response.status_code}")
+        if self.fmp_api_key:
+            try:
+                # Fetch S&P 500 constituents
+                sp500_url = f"{self.FMP_BASE_URL}/sp500_constituent?apikey={self.fmp_api_key}"
+                sp500_response = requests.get(sp500_url, timeout=30)
+                logger.info(f"S&P 500 API response status: {sp500_response.status_code}")
 
-            if nasdaq_response.status_code == 200:
-                nasdaq_data = nasdaq_response.json()
-                if isinstance(nasdaq_data, dict) and 'Error Message' in nasdaq_data:
-                    logger.error(f"FMP API Error: {nasdaq_data['Error Message']}")
-                else:
-                    for stock in nasdaq_data:
-                        symbol = stock.get('symbol', '')
-                        # Filter out stocks with special characters (preferred shares, etc.)
-                        if symbol and '.' not in symbol and '-' not in symbol:
-                            universe.append(symbol)
-                    logger.info(f"Fetched {len(nasdaq_data)} NASDAQ stocks from FMP")
-            else:
-                logger.error(f"NASDAQ API error: {nasdaq_response.status_code} - {nasdaq_response.text[:200]}")
+                if sp500_response.status_code == 200:
+                    sp500_data = sp500_response.json()
+                    if isinstance(sp500_data, list):
+                        for stock in sp500_data:
+                            symbol = stock.get('symbol', '')
+                            if symbol and '.' not in symbol:
+                                universe.append(symbol)
+                        logger.info(f"Fetched {len(sp500_data)} S&P 500 stocks from FMP")
 
-            # Fetch NYSE stocks
-            nyse_url = f"{self.FMP_BASE_URL}/stock-screener?marketCapMoreThan={min_market_cap}&exchange=NYSE&isActivelyTrading=true&limit=1000&apikey={self.fmp_api_key}"
-            nyse_response = requests.get(nyse_url, timeout=30)
-            logger.info(f"NYSE API response status: {nyse_response.status_code}")
+                # Fetch NASDAQ-100 constituents
+                nasdaq100_url = f"{self.FMP_BASE_URL}/nasdaq_constituent?apikey={self.fmp_api_key}"
+                nasdaq100_response = requests.get(nasdaq100_url, timeout=30)
+                logger.info(f"NASDAQ-100 API response status: {nasdaq100_response.status_code}")
 
-            if nyse_response.status_code == 200:
-                nyse_data = nyse_response.json()
-                if isinstance(nyse_data, dict) and 'Error Message' in nyse_data:
-                    logger.error(f"FMP API Error: {nyse_data['Error Message']}")
-                else:
-                    for stock in nyse_data:
-                        symbol = stock.get('symbol', '')
-                        # Filter out stocks with special characters (preferred shares, etc.)
-                        if symbol and '.' not in symbol and '-' not in symbol:
-                            universe.append(symbol)
-                    logger.info(f"Fetched {len(nyse_data)} NYSE stocks from FMP")
-            else:
-                logger.error(f"NYSE API error: {nyse_response.status_code} - {nyse_response.text[:200]}")
+                if nasdaq100_response.status_code == 200:
+                    nasdaq100_data = nasdaq100_response.json()
+                    if isinstance(nasdaq100_data, list):
+                        for stock in nasdaq100_data:
+                            symbol = stock.get('symbol', '')
+                            if symbol and '.' not in symbol:
+                                universe.append(symbol)
+                        logger.info(f"Fetched {len(nasdaq100_data)} NASDAQ-100 stocks from FMP")
 
-            # Remove duplicates and sort
-            universe = sorted(list(set(universe)))
-            logger.info(f"Total universe: {len(universe)} stocks above ${min_market_cap_b}B market cap")
+            except Exception as e:
+                logger.error(f"Error fetching stock universe from FMP: {e}")
 
-            # Cache the universe
-            self._universe_cache = universe
+        # Remove duplicates and sort
+        universe = sorted(list(set(universe)))
 
-        except Exception as e:
-            logger.error(f"Error fetching stock universe from FMP: {e}")
-            # Fallback to a small set
-            universe = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA']
+        # If API failed or returned nothing, use fallback
+        if not universe:
+            logger.warning("Using fallback stock universe")
+            universe = [
+                # Mega caps
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
+                'V', 'XOM', 'JPM', 'WMT', 'MA', 'PG', 'HD', 'CVX', 'MRK', 'ABBV',
+                'LLY', 'PEP', 'KO', 'COST', 'AVGO', 'TMO', 'MCD', 'CSCO', 'ACN', 'ABT',
+                # Large cap tech/growth
+                'ADBE', 'ORCL', 'NFLX', 'INTC', 'QCOM', 'INTU', 'IBM', 'NOW', 'AMAT', 'ADP',
+                'CRM', 'AMD', 'ISRG', 'BKNG', 'MDLZ', 'ADI', 'REGN', 'VRTX', 'GILD', 'PANW',
+                # High growth
+                'PLTR', 'COIN', 'SNOW', 'NET', 'SHOP', 'SQ', 'UBER', 'ABNB', 'DASH', 'CRWD',
+            ]
 
+        logger.info(f"Total universe: {len(universe)} stocks")
+        self._universe_cache = universe
         return universe
     
     def get_stock_data(self, ticker: str) -> Optional[Dict[str, Any]]:
