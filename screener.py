@@ -105,28 +105,40 @@ class MomentumScreener:
             # Fetch NASDAQ stocks
             nasdaq_url = f"{self.FMP_BASE_URL}/stock-screener?marketCapMoreThan={min_market_cap}&exchange=NASDAQ&isActivelyTrading=true&limit=1000&apikey={self.fmp_api_key}"
             nasdaq_response = requests.get(nasdaq_url, timeout=30)
+            logger.info(f"NASDAQ API response status: {nasdaq_response.status_code}")
 
             if nasdaq_response.status_code == 200:
                 nasdaq_data = nasdaq_response.json()
-                for stock in nasdaq_data:
-                    symbol = stock.get('symbol', '')
-                    # Filter out stocks with special characters (preferred shares, etc.)
-                    if symbol and '.' not in symbol and '-' not in symbol:
-                        universe.append(symbol)
-                logger.info(f"Fetched {len(nasdaq_data)} NASDAQ stocks from FMP")
+                if isinstance(nasdaq_data, dict) and 'Error Message' in nasdaq_data:
+                    logger.error(f"FMP API Error: {nasdaq_data['Error Message']}")
+                else:
+                    for stock in nasdaq_data:
+                        symbol = stock.get('symbol', '')
+                        # Filter out stocks with special characters (preferred shares, etc.)
+                        if symbol and '.' not in symbol and '-' not in symbol:
+                            universe.append(symbol)
+                    logger.info(f"Fetched {len(nasdaq_data)} NASDAQ stocks from FMP")
+            else:
+                logger.error(f"NASDAQ API error: {nasdaq_response.status_code} - {nasdaq_response.text[:200]}")
 
             # Fetch NYSE stocks
             nyse_url = f"{self.FMP_BASE_URL}/stock-screener?marketCapMoreThan={min_market_cap}&exchange=NYSE&isActivelyTrading=true&limit=1000&apikey={self.fmp_api_key}"
             nyse_response = requests.get(nyse_url, timeout=30)
+            logger.info(f"NYSE API response status: {nyse_response.status_code}")
 
             if nyse_response.status_code == 200:
                 nyse_data = nyse_response.json()
-                for stock in nyse_data:
-                    symbol = stock.get('symbol', '')
-                    # Filter out stocks with special characters (preferred shares, etc.)
-                    if symbol and '.' not in symbol and '-' not in symbol:
-                        universe.append(symbol)
-                logger.info(f"Fetched {len(nyse_data)} NYSE stocks from FMP")
+                if isinstance(nyse_data, dict) and 'Error Message' in nyse_data:
+                    logger.error(f"FMP API Error: {nyse_data['Error Message']}")
+                else:
+                    for stock in nyse_data:
+                        symbol = stock.get('symbol', '')
+                        # Filter out stocks with special characters (preferred shares, etc.)
+                        if symbol and '.' not in symbol and '-' not in symbol:
+                            universe.append(symbol)
+                    logger.info(f"Fetched {len(nyse_data)} NYSE stocks from FMP")
+            else:
+                logger.error(f"NYSE API error: {nyse_response.status_code} - {nyse_response.text[:200]}")
 
             # Remove duplicates and sort
             universe = sorted(list(set(universe)))
