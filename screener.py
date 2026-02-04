@@ -54,7 +54,14 @@ class StockSignal:
     momentum_score: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Convert numpy types to Python native types for JSON serialization
+        for key, value in d.items():
+            if isinstance(value, (np.bool_, np.integer)):
+                d[key] = int(value) if isinstance(value, np.integer) else bool(value)
+            elif isinstance(value, np.floating):
+                d[key] = float(value)
+        return d
 
 
 class MomentumScreener:
