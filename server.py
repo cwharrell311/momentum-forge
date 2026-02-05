@@ -6,6 +6,7 @@ Flask API to serve screener data to the frontend.
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from screener import MomentumScreener
+from congress_tracker import CongressTracker
 import os
 import threading
 import time
@@ -15,7 +16,11 @@ app = Flask(__name__)
 CORS(app)
 
 # Global state
-screener = MomentumScreener(fmp_api_key=os.environ.get('FMP_API_KEY'))
+fmp_key = os.environ.get('FMP_API_KEY')
+screener = MomentumScreener(fmp_api_key=fmp_key)
+congress_tracker = CongressTracker(fmp_api_key=fmp_key)
+congress_trades = []
+congress_loading = False
 scan_results = []
 scan_status = {
     'running': False,
@@ -173,6 +178,141 @@ def get_stats():
         'bullish_options_flow': bullish_options,
         'avg_score': round(avg_score, 1),
         'last_scan': scan_status.get('last_scan')
+    })
+
+
+# ==========================================
+# Congressional Trade Tracker Endpoints
+# ==========================================
+
+@app.route('/api/congress/trades', methods=['GET'])
+def get_congress_trades():
+    """Get congressional stock trades."""
+    global congress_trades, congress_loading
+
+    # Filters
+    chamber = request.args.get('chamber', 'all')
+    party = request.args.get('party', 'all')
+    trade_type = request.args.get('trade_type', 'all')
+    ticker = request.args.get('ticker', '')
+    politician = request.args.get('politician', '')
+
+    # Fetch if empty
+    if not congress_trades and not congress_loading:
+        congress_loading = True
+        try:
+            trades = congress_tracker.get_trades(days_back=90)
+            congress_trades = [t.to_dict() for t in trades]
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        finally:
+            congress_loading = False
+
+    filtered = congress_trades.copy()
+
+    if chamber != 'all':
+        filtered = [t for t in filtered if t['chamber'] == chamber]
+
+    if party != 'all':
+        filtered = [t for t in filtered if t['party'] == party]
+
+    if trade_type != 'all':
+        if trade_type == 'Purchase':
+            filtered = [t for t in filtered if 'Purchase' in t['trade_type']]
+        elif trade_type == 'Sale':
+            filtered = [t for t in filtered if 'Sale' in t['trade_type']]
+
+    if ticker:
+        filtered = [t for t in filtered if t['ticker'].upper() == ticker.upper()]
+
+    if politician:
+        pol_lower = politician.lower()
+        filtered = [t for t in filtered if pol_lower in t['politician'].lower()]
+
+    return jsonify({
+        'count': len(filtered),
+        'total': len(congress_trades),
+        'trades': filtered
+    })
+
+
+@app.route('/api/congress/refresh', methods=['POST'])
+def refresh_congress_trades():
+    """Force refresh congressional trades data."""
+    global congress_trades, congress_loading
+
+    if congress_loading:
+        return jsonify({'error': 'Already loading'}), 400
+
+    congress_loading = True
+
+    def fetch_async():
+        global congress_trades, congress_loading
+        try:
+            congress_tracker._cache = None  # Clear cache
+            trades = congress_tracker.get_trades(days_back=90)
+            congress_trades = [t.to_dict() for t in trades]
+        except Exception as e:
+            pass
+        finally:
+            congress_loading = False
+
+    thread = threading.Thread(target=fetch_async)
+    thread.start()
+
+    return jsonify({'message': 'Refresh started'})
+
+
+@app.route('/api/congress/stats', methods=['GET'])
+def get_congress_stats():
+    """Get congressional trading statistics."""
+    if not congress_trades:
+        return jsonify({
+            'total_trades': 0,
+            'total_politicians': 0,
+            'total_purchases': 0,
+            'total_sales': 0,
+            'top_traded_tickers': [],
+            'most_active_politicians': [],
+            'avg_days_to_disclose': 0,
+        })
+
+    purchases = [t for t in congress_trades if 'Purchase' in t.get('trade_type', '')]
+    sales = [t for t in congress_trades if 'Sale' in t.get('trade_type', '')]
+
+    ticker_counts = {}
+    for t in congress_trades:
+        tk = t.get('ticker', '')
+        ticker_counts[tk] = ticker_counts.get(tk, 0) + 1
+    top_tickers = sorted(ticker_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    pol_counts = {}
+    for t in congress_trades:
+        p = t.get('politician', '')
+        pol_counts[p] = pol_counts.get(p, 0) + 1
+    top_pols = sorted(pol_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    disclosure_days = [t['days_to_disclose'] for t in congress_trades if t.get('days_to_disclose', 0) > 0]
+    avg_days = sum(disclosure_days) / len(disclosure_days) if disclosure_days else 0
+
+    return jsonify({
+        'total_trades': len(congress_trades),
+        'total_politicians': len(set(t.get('politician', '') for t in congress_trades)),
+        'total_purchases': len(purchases),
+        'total_sales': len(sales),
+        'top_traded_tickers': [{'ticker': t, 'count': c} for t, c in top_tickers],
+        'most_active_politicians': [{'name': n, 'count': c} for n, c in top_pols],
+        'avg_days_to_disclose': round(avg_days, 1),
+    })
+
+
+@app.route('/api/congress/status', methods=['GET'])
+def congress_status():
+    """Check if congress data is loading."""
+    return jsonify({
+        'loading': congress_loading,
+        'has_data': len(congress_trades) > 0,
+        'trade_count': len(congress_trades),
     })
 
 

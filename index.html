@@ -690,6 +690,139 @@
             font-size: 12px;
         }
 
+        /* View Toggle (Merriam-Webster style) */
+        .view-toggle {
+            display: flex;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .view-toggle-btn {
+            padding: 10px 20px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-family: 'Outfit', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .view-toggle-btn.active {
+            background: linear-gradient(135deg, var(--accent-green) 0%, #00b894 100%);
+            color: var(--bg-primary);
+        }
+
+        .view-toggle-btn:not(.active):hover {
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+        }
+
+        /* Congress Trade Styles */
+        .trade-type-badge {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .trade-type-badge.purchase {
+            background: var(--accent-green-dim);
+            color: var(--accent-green);
+        }
+
+        .trade-type-badge.sale {
+            background: var(--accent-red-dim);
+            color: var(--accent-red);
+        }
+
+        .trade-type-badge.exchange {
+            background: var(--accent-blue-dim);
+            color: var(--accent-blue);
+        }
+
+        .party-badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .party-badge.democrat {
+            background: rgba(74, 158, 255, 0.15);
+            color: #4a9eff;
+        }
+
+        .party-badge.republican {
+            background: rgba(255, 71, 87, 0.15);
+            color: #ff4757;
+        }
+
+        .party-badge.independent {
+            background: rgba(168, 85, 247, 0.15);
+            color: #a855f7;
+        }
+
+        .chamber-badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 500;
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+        }
+
+        .disclosure-delay {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+
+        .disclosure-delay.late {
+            color: var(--accent-red);
+        }
+
+        .disclosure-delay.normal {
+            color: var(--accent-yellow);
+        }
+
+        .disclosure-delay.fast {
+            color: var(--accent-green);
+        }
+
+        .politician-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .politician-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .politician-meta {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .amount-cell {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .date-cell {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .app-container {
@@ -725,7 +858,243 @@
         // API Configuration
         const API_BASE = 'http://localhost:5000/api';
 
+        // ==========================================
+        // Congress Tracker View
+        // ==========================================
+        function CongressView({ apiConnected }) {
+            const [trades, setTrades] = useState([]);
+            const [stats, setStats] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [congressFilters, setCongressFilters] = useState({
+                chamber: 'all',
+                party: 'all',
+                trade_type: 'all',
+                ticker: '',
+                politician: ''
+            });
+
+            const fetchTrades = useCallback(async () => {
+                try {
+                    const params = new URLSearchParams();
+                    if (congressFilters.chamber !== 'all') params.set('chamber', congressFilters.chamber);
+                    if (congressFilters.party !== 'all') params.set('party', congressFilters.party);
+                    if (congressFilters.trade_type !== 'all') params.set('trade_type', congressFilters.trade_type);
+                    if (congressFilters.ticker) params.set('ticker', congressFilters.ticker);
+                    if (congressFilters.politician) params.set('politician', congressFilters.politician);
+
+                    const response = await fetch(`${API_BASE}/congress/trades?${params}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        setTrades(data.trades || []);
+                    }
+                } catch (e) {
+                    console.error('Failed to fetch congress trades:', e);
+                }
+            }, [congressFilters]);
+
+            const fetchStats = useCallback(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/congress/stats`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        setStats(data);
+                    }
+                } catch (e) {
+                    console.error('Failed to fetch congress stats:', e);
+                }
+            }, []);
+
+            const refreshTrades = async () => {
+                setLoading(true);
+                try {
+                    await fetch(`${API_BASE}/congress/refresh`, { method: 'POST' });
+                    // Poll until loaded
+                    const poll = setInterval(async () => {
+                        const res = await fetch(`${API_BASE}/congress/status`);
+                        if (res.ok) {
+                            const status = await res.json();
+                            if (!status.loading) {
+                                clearInterval(poll);
+                                await fetchTrades();
+                                await fetchStats();
+                                setLoading(false);
+                            }
+                        }
+                    }, 1000);
+                } catch (e) {
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                if (apiConnected) {
+                    fetchTrades();
+                    fetchStats();
+                }
+            }, [apiConnected, fetchTrades, fetchStats]);
+
+            const getDelayClass = (days) => {
+                if (days > 45) return 'late';
+                if (days > 20) return 'normal';
+                return 'fast';
+            };
+
+            const getPartyClass = (party) => {
+                if (party.toLowerCase().includes('democrat')) return 'democrat';
+                if (party.toLowerCase().includes('republican')) return 'republican';
+                return 'independent';
+            };
+
+            const getTradeTypeClass = (type) => {
+                if (type.includes('Purchase')) return 'purchase';
+                if (type.includes('Sale')) return 'sale';
+                return 'exchange';
+            };
+
+            return (
+                <div>
+                    <div className="stats-bar">
+                        <div className="stat-card">
+                            <div className="stat-label">Total Trades</div>
+                            <div className="stat-value blue">{stats?.total_trades || '—'}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">Purchases</div>
+                            <div className="stat-value green">{stats?.total_purchases || '—'}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">Sales</div>
+                            <div className="stat-value" style={{color: 'var(--accent-red)'}}>{stats?.total_sales || '—'}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">Avg Days to Disclose</div>
+                            <div className="stat-value yellow">{stats?.avg_days_to_disclose || '—'}</div>
+                        </div>
+                    </div>
+
+                    <div className="filters-section">
+                        <div className="filters-header">
+                            <div className="filters-title">Filters</div>
+                            <button className="scan-btn" onClick={refreshTrades} disabled={loading || !apiConnected} style={{padding: '8px 16px', fontSize: '12px'}}>
+                                {loading ? 'Loading...' : 'Refresh Data'}
+                            </button>
+                        </div>
+                        <div className="filters-grid">
+                            <div className="filter-group">
+                                <label className="filter-label">Chamber</label>
+                                <select className="filter-input" value={congressFilters.chamber}
+                                    onChange={e => setCongressFilters(p => ({...p, chamber: e.target.value}))}>
+                                    <option value="all">All</option>
+                                    <option value="Senate">Senate</option>
+                                    <option value="House">House</option>
+                                </select>
+                            </div>
+                            <div className="filter-group">
+                                <label className="filter-label">Party</label>
+                                <select className="filter-input" value={congressFilters.party}
+                                    onChange={e => setCongressFilters(p => ({...p, party: e.target.value}))}>
+                                    <option value="all">All Parties</option>
+                                    <option value="Democrat">Democrat</option>
+                                    <option value="Republican">Republican</option>
+                                    <option value="Independent">Independent</option>
+                                </select>
+                            </div>
+                            <div className="filter-group">
+                                <label className="filter-label">Trade Type</label>
+                                <select className="filter-input" value={congressFilters.trade_type}
+                                    onChange={e => setCongressFilters(p => ({...p, trade_type: e.target.value}))}>
+                                    <option value="all">All Types</option>
+                                    <option value="Purchase">Purchases</option>
+                                    <option value="Sale">Sales</option>
+                                </select>
+                            </div>
+                            <div className="filter-group">
+                                <label className="filter-label">Search Ticker</label>
+                                <input type="text" className="filter-input" placeholder="e.g. AAPL"
+                                    value={congressFilters.ticker}
+                                    onChange={e => setCongressFilters(p => ({...p, ticker: e.target.value.toUpperCase()}))} />
+                            </div>
+                            <div className="filter-group">
+                                <label className="filter-label">Search Politician</label>
+                                <input type="text" className="filter-input" placeholder="e.g. Pelosi"
+                                    value={congressFilters.politician}
+                                    onChange={e => setCongressFilters(p => ({...p, politician: e.target.value}))} />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="results-section">
+                        <div className="results-header">
+                            <div className="results-title">Congressional Trades</div>
+                            <div className="results-count">{trades.length} trades</div>
+                        </div>
+
+                        {loading ? (
+                            <div className="loading-state">
+                                <div className="loading-spinner"></div>
+                                <div className="loading-text">Fetching congressional trade data...</div>
+                            </div>
+                        ) : trades.length === 0 ? (
+                            <div className="empty-state">
+                                <div className="empty-icon">🏛️</div>
+                                <div className="empty-title">No trades loaded</div>
+                                <div className="empty-text">
+                                    {apiConnected
+                                        ? 'Click "Refresh Data" to fetch congressional trades'
+                                        : 'Connect the backend to start tracking'}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Politician</th>
+                                            <th>Ticker</th>
+                                            <th>Type</th>
+                                            <th>Amount</th>
+                                            <th>Trade Date</th>
+                                            <th>Disclosed</th>
+                                            <th>Delay</th>
+                                            <th>Owner</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {trades.map((trade, i) => (
+                                            <tr key={i}>
+                                                <td>
+                                                    <div className="politician-cell">
+                                                        <span className="politician-name">{trade.politician}</span>
+                                                        <div className="politician-meta">
+                                                            <span className={`party-badge ${getPartyClass(trade.party)}`}>{trade.party}</span>
+                                                            <span className="chamber-badge">{trade.chamber}</span>
+                                                            {trade.state && <span className="chamber-badge">{trade.state}</span>}
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td><span className="ticker-symbol">{trade.ticker}</span></td>
+                                                <td><span className={`trade-type-badge ${getTradeTypeClass(trade.trade_type)}`}>{trade.trade_type}</span></td>
+                                                <td><span className="amount-cell">{trade.amount_range}</span></td>
+                                                <td><span className="date-cell">{trade.trade_date}</span></td>
+                                                <td><span className="date-cell">{trade.disclosure_date}</span></td>
+                                                <td><span className={`disclosure-delay ${getDelayClass(trade.days_to_disclose)}`}>{trade.days_to_disclose}d</span></td>
+                                                <td style={{fontSize: '12px', color: 'var(--text-muted)'}}>{trade.owner}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // Main App
+        // ==========================================
         function App() {
+            const [activeView, setActiveView] = useState('momentum');
             const [stocks, setStocks] = useState([]);
             const [filteredStocks, setFilteredStocks] = useState([]);
             const [loading, setLoading] = useState(false);
@@ -906,23 +1275,35 @@
                             <div className="logo-icon">M</div>
                             <div className="logo-text">Momentum<span>Forge</span></div>
                         </div>
+                        <div className="view-toggle">
+                            <button className={`view-toggle-btn ${activeView === 'momentum' ? 'active' : ''}`}
+                                onClick={() => setActiveView('momentum')}>
+                                Momentum Screener
+                            </button>
+                            <button className={`view-toggle-btn ${activeView === 'congress' ? 'active' : ''}`}
+                                onClick={() => setActiveView('congress')}>
+                                Capitol Tracker
+                            </button>
+                        </div>
                         <div className="header-actions">
                             <div className="api-status">
                                 <div className={`api-dot ${apiConnected ? 'connected' : ''}`}></div>
                                 {apiConnected ? 'Backend Connected' : 'Backend Offline'}
                             </div>
-                            <button className="scan-btn" onClick={runScan} disabled={loading || !apiConnected}>
-                                {loading ? (
-                                    <>
-                                        <div className="spinner"></div>
-                                        Scanning...
-                                    </>
-                                ) : (
-                                    <>
-                                        ⚡ Run Scan
-                                    </>
-                                )}
-                            </button>
+                            {activeView === 'momentum' && (
+                                <button className="scan-btn" onClick={runScan} disabled={loading || !apiConnected}>
+                                    {loading ? (
+                                        <>
+                                            <div className="spinner"></div>
+                                            Scanning...
+                                        </>
+                                    ) : (
+                                        <>
+                                            ⚡ Run Scan
+                                        </>
+                                    )}
+                                </button>
+                            )}
                         </div>
                     </header>
 
@@ -934,7 +1315,7 @@
                                 <p>
                                     Start the backend server to enable live scanning. Run these commands in your terminal:
                                     <br /><br />
-                                    <code>cd backend && pip install -r requirements.txt</code>
+                                    <code>pip install -r requirements.txt</code>
                                     <br />
                                     <code>python server.py</code>
                                 </p>
@@ -942,6 +1323,10 @@
                         </div>
                     )}
 
+                    {activeView === 'congress' && <CongressView apiConnected={apiConnected} />}
+
+                    {activeView === 'momentum' && (
+                        <div>
                     <div className="stats-bar">
                         <div className="stat-card">
                             <div className="stat-label">Stocks Scanned</div>
@@ -1114,6 +1499,8 @@
                             </div>
                         )}
                     </div>
+                        </div>
+                    )}
 
                     {selectedStock && (
                         <div className="modal-overlay" onClick={() => setSelectedStock(null)}>
