@@ -5,6 +5,10 @@ Scrapes congressional stock trade filings directly from official government sour
   - House: disclosures-clerk.house.gov (House Clerk Financial Disclosures)
 
 All data is publicly available under the STOCK Act of 2012.
+
+Based on proven approaches from:
+  - github.com/neelsomani/senator-filings
+  - gist.github.com/dannguyen/994bfe5a4a1e9ba6c73f21046e31e86c
 """
 
 import requests
@@ -25,219 +29,210 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
-# Local cache file path (next to this script)
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
-SENATE_CACHE = os.path.join(CACHE_DIR, 'senate_trades.json')
-HOUSE_CACHE = os.path.join(CACHE_DIR, 'house_trades.json')
 
 
 class SenateScraper:
     """
     Scrapes the Senate Electronic Financial Disclosure (EFD) system.
-    URL: https://efdsearch.senate.gov/search/
+    Based on neelsomani/senator-filings proven approach.
 
-    The Senate EFD provides Periodic Transaction Reports (PTRs) that
-    contain individual stock trades by senators.
+    Flow:
+    1. GET landing page to extract csrfmiddlewaretoken
+    2. POST to accept the prohibition agreement
+    3. Get csrftoken from cookies
+    4. POST to /search/report/data/ with proper params
     """
 
-    BASE_URL = "https://efdsearch.senate.gov"
-    SEARCH_URL = f"{BASE_URL}/search/"
-    REPORT_URL = f"{BASE_URL}/search/report/data/"
-    AGREEMENT_URL = f"{BASE_URL}/search/home/confirm/"
+    LANDING_PAGE_URL = "https://efdsearch.senate.gov/search/home/"
+    SEARCH_PAGE_URL = "https://efdsearch.senate.gov/search/"
+    REPORTS_URL = "https://efdsearch.senate.gov/search/report/data/"
+    BATCH_SIZE = 100
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
-        self._agreed = False
+        self._csrf_token = None
+        self._last_request = 0
 
-    def _accept_agreement(self) -> bool:
-        """Accept the EFD search agreement/disclaimer page."""
-        if self._agreed:
-            return True
+    def _rate_limit(self):
+        """Enforce 2-second delay between requests."""
+        elapsed = time.time() - self._last_request
+        if elapsed < 2.0:
+            time.sleep(2.0 - elapsed)
+        self._last_request = time.time()
 
-        try:
-            # First, visit the home page to get cookies
-            resp = self.session.get(f"{self.BASE_URL}/search/home/", timeout=15)
-            logger.info(f"Senate EFD home page: {resp.status_code}")
-
-            if resp.status_code != 200:
-                return False
-
-            # Check if there's an agreement page
-            if 'agree' in resp.text.lower() or 'confirm' in resp.text.lower():
-                # Extract CSRF token if present
-                csrf = self._extract_csrf(resp.text)
-
-                # POST to accept the agreement
-                data = {'prohibition_agreement': '1'}
-                if csrf:
-                    data['csrfmiddlewaretoken'] = csrf
-                    self.session.headers['X-CSRFToken'] = csrf
-
-                agree_resp = self.session.post(
-                    self.AGREEMENT_URL,
-                    data=data,
-                    headers={'Referer': f"{self.BASE_URL}/search/home/"},
-                    timeout=15,
-                    allow_redirects=True,
-                )
-                logger.info(f"Senate EFD agreement: {agree_resp.status_code}")
-
-            self._agreed = True
-            return True
-
-        except Exception as e:
-            logger.error(f"Senate EFD agreement failed: {e}")
-            return False
-
-    def _extract_csrf(self, html: str) -> Optional[str]:
-        """Extract CSRF token from HTML page."""
-        # Look for csrfmiddlewaretoken in form
-        match = re.search(r'name=["\']csrfmiddlewaretoken["\'].*?value=["\']([^"\']+)', html)
-        if match:
-            return match.group(1)
-        # Look for csrf token in cookie-style meta tag
-        match = re.search(r'csrf[_-]?token["\']?\s*(?:content|value)=["\']([^"\']+)', html, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        return None
-
-    def fetch_recent_filings(self, days_back: int = 120) -> List[Dict]:
+    def _get_csrf(self) -> Optional[str]:
         """
-        Search for recent Periodic Transaction Reports (PTR filings).
-        Returns a list of filing metadata (senator name, date, link).
+        Set the session ID and return the CSRF token for this session.
+        This handles the prohibition agreement page.
         """
-        if not self._accept_agreement():
-            logger.warning("Could not accept Senate EFD agreement")
-            return []
-
-        filings = []
-        start_date = (datetime.now() - timedelta(days=days_back)).strftime('%m/%d/%Y')
-
+        self._rate_limit()
         try:
-            # The Senate EFD search uses AJAX POST requests
-            search_data = {
-                'start_date': start_date,
-                'end_date': datetime.now().strftime('%m/%d/%Y'),
-                'filer_type': '',  # All filers
-                'report_type': '11',  # Periodic Transaction Report
-                'submitted_start_date': start_date,
-                'submitted_end_date': '',
-                'candidate_state': '',
-                'senator_state': '',
-                'office_id': '',
+            # Get landing page with the agreement form
+            landing_resp = self.session.get(self.LANDING_PAGE_URL, timeout=30)
+            logger.info(f"Senate EFD landing page: {landing_resp.status_code}")
+
+            if landing_resp.status_code != 200:
+                logger.error(f"Senate EFD landing page failed: {landing_resp.status_code}")
+                return None
+
+            if landing_resp.url != self.LANDING_PAGE_URL:
+                logger.warning(f"Unexpected redirect to: {landing_resp.url}")
+
+            # Extract csrfmiddlewaretoken from form
+            soup = BeautifulSoup(landing_resp.text, 'lxml')
+            csrf_input = soup.find(attrs={'name': 'csrfmiddlewaretoken'})
+
+            if not csrf_input or not csrf_input.get('value'):
+                logger.error("Could not find csrfmiddlewaretoken in landing page")
+                return None
+
+            form_csrf = csrf_input['value']
+            logger.info(f"Got form CSRF token: {form_csrf[:20]}...")
+
+            # Accept the prohibition agreement
+            self._rate_limit()
+            form_payload = {
+                'csrfmiddlewaretoken': form_csrf,
+                'prohibition_agreement': '1'
             }
 
-            csrf = self.session.cookies.get('csrftoken', '')
-            if csrf:
-                search_data['csrfmiddlewaretoken'] = csrf
-
-            logger.info(f"Searching Senate EFD for PTR filings since {start_date}...")
-            resp = self.session.post(
-                self.REPORT_URL,
-                data=search_data,
-                headers={
-                    'Referer': self.SEARCH_URL,
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                timeout=30,
+            agree_resp = self.session.post(
+                self.LANDING_PAGE_URL,
+                data=form_payload,
+                headers={'Referer': self.LANDING_PAGE_URL},
+                timeout=30
             )
-            logger.info(f"Senate EFD search response: {resp.status_code}")
+            logger.info(f"Senate EFD agreement POST: {agree_resp.status_code}")
+
+            # Extract csrftoken from cookies
+            if 'csrftoken' in self.session.cookies:
+                self._csrf_token = self.session.cookies['csrftoken']
+            elif 'csrf' in self.session.cookies:
+                self._csrf_token = self.session.cookies['csrf']
+            else:
+                logger.error(f"No CSRF cookie found. Cookies: {list(self.session.cookies.keys())}")
+                return None
+
+            logger.info(f"Got session CSRF token: {self._csrf_token[:20]}...")
+            return self._csrf_token
+
+        except Exception as e:
+            logger.error(f"CSRF flow failed: {e}")
+            return None
+
+    def fetch_ptr_list(self, offset: int = 0, days_back: int = 365) -> List[List[str]]:
+        """
+        Query the PTR (Periodic Transaction Report) list API.
+        Returns list of [name_html, office, report_type_html, date] entries.
+        """
+        if not self._csrf_token:
+            if not self._get_csrf():
+                return []
+
+        self._rate_limit()
+
+        start_date = (datetime.now() - timedelta(days=days_back)).strftime('%m/%d/%Y 00:00:00')
+
+        # These are the exact parameters from the working neelsomani code
+        login_data = {
+            'start': str(offset),
+            'length': str(self.BATCH_SIZE),
+            'report_types': '[11]',  # 11 = Periodic Transaction Report
+            'filer_types': '[]',
+            'submitted_start_date': start_date,
+            'submitted_end_date': '',
+            'candidate_state': '',
+            'senator_state': '',
+            'office_id': '',
+            'first_name': '',
+            'last_name': '',
+            'csrfmiddlewaretoken': self._csrf_token,
+        }
+
+        logger.info(f"Fetching PTR list, offset={offset}, since {start_date[:10]}")
+
+        try:
+            resp = self.session.post(
+                self.REPORTS_URL,
+                data=login_data,
+                headers={'Referer': self.SEARCH_PAGE_URL},
+                timeout=60
+            )
+
+            logger.info(f"PTR list response: {resp.status_code}")
 
             if resp.status_code != 200:
-                # Try alternative: direct search page
-                resp = self.session.get(
-                    f"{self.SEARCH_URL}?report_type=11&submitted_start_date={start_date}",
-                    timeout=30,
-                )
-                logger.info(f"Senate EFD alternative search: {resp.status_code}")
+                logger.error(f"PTR list request failed: {resp.status_code} - {resp.text[:500]}")
+                return []
 
-            if resp.status_code == 200:
-                filings = self._parse_search_results(resp.text)
-                logger.info(f"Found {len(filings)} Senate PTR filings")
+            data = resp.json()
+            rows = data.get('data', [])
+            logger.info(f"Got {len(rows)} PTR entries")
+            return rows
 
+        except json.JSONDecodeError as e:
+            logger.error(f"PTR list response not JSON: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Senate EFD search failed: {e}")
+            logger.error(f"PTR list request error: {e}")
+            return []
 
-        return filings
+    def fetch_all_ptrs(self, days_back: int = 365) -> List[Dict]:
+        """Fetch all PTR filings, paginating through results."""
+        all_filings = []
+        offset = 0
 
-    def _parse_search_results(self, html: str) -> List[Dict]:
-        """Parse the search results page for filing links."""
-        filings = []
-        soup = BeautifulSoup(html, 'html.parser')
+        while True:
+            rows = self.fetch_ptr_list(offset=offset, days_back=days_back)
+            if not rows:
+                break
 
-        # Try parsing as JSON (AJAX response)
-        try:
-            data = json.loads(html)
-            if isinstance(data, dict) and 'data' in data:
-                for row in data['data']:
-                    filing = self._parse_json_row(row)
-                    if filing:
-                        filings.append(filing)
-                return filings
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Parse as HTML table
-        table = soup.find('table', {'id': 'filedReports'}) or soup.find('table')
-        if not table:
-            # Try tbody directly
-            rows = soup.find_all('tr')
-        else:
-            rows = table.find_all('tr')
-
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) >= 4:
-                filing = self._parse_html_row(cells)
+            for row in rows:
+                filing = self._parse_ptr_row(row)
                 if filing:
-                    filings.append(filing)
+                    all_filings.append(filing)
 
-        return filings
+            if len(rows) < self.BATCH_SIZE:
+                break
 
-    def _parse_json_row(self, row: Any) -> Optional[Dict]:
-        """Parse a JSON row from AJAX response."""
+            offset += self.BATCH_SIZE
+
+            # Safety limit
+            if offset > 10000:
+                logger.warning("Hit 10k filing limit, stopping")
+                break
+
+        logger.info(f"Total PTR filings found: {len(all_filings)}")
+        return all_filings
+
+    def _parse_ptr_row(self, row: List) -> Optional[Dict]:
+        """Parse a row from the PTR list API response."""
         try:
-            if isinstance(row, list):
-                # Format: [name_html, office, report_type_html, date]
-                name_match = re.search(r'>([^<]+)<', str(row[0]))
-                link_match = re.search(r'href=["\']([^"\']+)', str(row[0]))
-                name = name_match.group(1).strip() if name_match else ''
+            if not isinstance(row, list) or len(row) < 4:
+                return None
+
+            # Row format: [name_html, office, report_type_html, date]
+            name_html = str(row[0])
+            report_html = str(row[2])
+            date_str = str(row[3]).strip()
+
+            # Extract name from HTML
+            name_match = re.search(r'>([^<]+)<', name_html)
+            name = name_match.group(1).strip() if name_match else ''
+
+            # Extract report link from HTML
+            link_match = re.search(r'href=["\']([^"\']+)', report_html)
+            link = link_match.group(1).strip() if link_match else ''
+
+            if not link:
+                # Try name cell
+                link_match = re.search(r'href=["\']([^"\']+)', name_html)
                 link = link_match.group(1).strip() if link_match else ''
 
-                # Report type link
-                report_link_match = re.search(r'href=["\']([^"\']+)', str(row[2]))
-                report_link = report_link_match.group(1).strip() if report_link_match else link
-
-                date_str = str(row[3]).strip() if len(row) > 3 else ''
-
-                if name and report_link:
-                    if not report_link.startswith('http'):
-                        report_link = f"{self.BASE_URL}{report_link}"
-                    return {
-                        'name': name,
-                        'link': report_link,
-                        'date': date_str,
-                        'type': 'PTR',
-                    }
-        except Exception as e:
-            logger.debug(f"Error parsing JSON row: {e}")
-        return None
-
-    def _parse_html_row(self, cells: list) -> Optional[Dict]:
-        """Parse an HTML table row."""
-        try:
-            # First cell: name with link
-            name_cell = cells[0]
-            name = name_cell.get_text(strip=True)
-            link_tag = name_cell.find('a') or (cells[2].find('a') if len(cells) > 2 else None)
-            link = link_tag['href'] if link_tag and 'href' in link_tag.attrs else ''
-
-            if not link.startswith('http') and link:
-                link = f"{self.BASE_URL}{link}"
-
-            # Date cell (usually last or second-to-last)
-            date_str = cells[-1].get_text(strip=True) if cells else ''
+            if link and not link.startswith('http'):
+                link = f"https://efdsearch.senate.gov{link}"
 
             if name and link:
                 return {
@@ -245,66 +240,77 @@ class SenateScraper:
                     'link': link,
                     'date': date_str,
                     'type': 'PTR',
+                    'chamber': 'Senate',
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error parsing PTR row: {e}")
+
         return None
 
     def fetch_filing_transactions(self, filing: Dict) -> List[Dict]:
         """
         Fetch individual transactions from a PTR filing detail page.
-        Each transaction is a stock trade (buy/sell) with ticker, amount, date.
         """
         transactions = []
         link = filing.get('link', '')
         if not link:
             return transactions
 
-        try:
-            time.sleep(0.5)  # Be respectful
-            resp = self.session.get(link, timeout=15)
+        self._rate_limit()
 
-            if resp.status_code != 200:
-                logger.debug(f"Filing detail page returned {resp.status_code}: {link}")
+        try:
+            # Check if session expired (redirects to landing page)
+            resp = self.session.get(link, timeout=30, allow_redirects=False)
+
+            if resp.status_code in (301, 302):
+                redirect_url = resp.headers.get('Location', '')
+                if 'home' in redirect_url or 'login' in redirect_url:
+                    logger.info("Session expired, re-authenticating...")
+                    self._csrf_token = None
+                    self._get_csrf()
+                    resp = self.session.get(link, timeout=30)
+            elif resp.status_code != 200:
+                logger.debug(f"Filing page returned {resp.status_code}: {link}")
                 return transactions
 
-            soup = BeautifulSoup(resp.text, 'html.parser')
+            soup = BeautifulSoup(resp.text, 'lxml')
 
             # Find transaction tables
             tables = soup.find_all('table')
             for table in tables:
-                header_text = ''
-                thead = table.find('thead') or table.find('tr')
-                if thead:
-                    header_text = thead.get_text().lower()
+                rows = table.find_all('tr')
+                if not rows:
+                    continue
 
-                # Look for transaction tables (contain columns like ticker, date, type, amount)
-                if any(kw in header_text for kw in ['ticker', 'transaction', 'asset', 'amount', 'type']):
-                    rows = table.find_all('tr')[1:]  # Skip header
-                    for row in rows:
+                # Check header row for transaction-related keywords
+                header_row = rows[0]
+                header_text = header_row.get_text().lower()
+
+                if any(kw in header_text for kw in ['ticker', 'transaction', 'asset', 'amount', 'type', 'date']):
+                    # Parse data rows
+                    for row in rows[1:]:
                         tx = self._parse_transaction_row(row, filing)
                         if tx:
                             transactions.append(tx)
 
-            # If no table found, try parsing structured divs
+            # If no table transactions, try parsing structured content
             if not transactions:
-                transactions = self._parse_structured_content(soup, filing)
+                transactions = self._parse_unstructured(soup, filing)
 
         except Exception as e:
-            logger.debug(f"Error fetching filing transactions: {e}")
+            logger.debug(f"Error fetching filing: {e}")
 
         return transactions
 
     def _parse_transaction_row(self, row, filing: Dict) -> Optional[Dict]:
-        """Parse a single transaction row from a filing detail page."""
+        """Parse a transaction table row."""
         cells = row.find_all('td')
-        if len(cells) < 4:
+        if len(cells) < 3:
             return None
 
         try:
             cell_texts = [c.get_text(strip=True) for c in cells]
 
-            # Try to identify columns by content patterns
             ticker = ''
             asset_name = ''
             tx_date = ''
@@ -312,32 +318,36 @@ class SenateScraper:
             amount = ''
             owner = ''
 
-            for i, text in enumerate(cell_texts):
+            for text in cell_texts:
+                text_clean = text.strip()
+
                 # Ticker: 1-5 uppercase letters
-                if re.match(r'^[A-Z]{1,5}$', text) and not ticker:
-                    ticker = text
-                # Date: MM/DD/YYYY pattern
-                elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', text) and not tx_date:
-                    tx_date = text
-                # Type: Purchase/Sale keywords
-                elif any(kw in text.lower() for kw in ['purchase', 'sale', 'exchange', 'buy', 'sell']):
-                    tx_type = text
-                # Amount: dollar sign or range
-                elif '$' in text or re.match(r'.*\d+.*-.*\d+', text):
-                    amount = text
-                # Owner: Self/Spouse/Joint/Child/Dependent
-                elif text.lower() in ('self', 'spouse', 'joint', 'child', 'dependent'):
-                    owner = text
-                # Asset name: longer text without special patterns
-                elif len(text) > 5 and not ticker and not asset_name:
-                    # Could be asset description
-                    # Check if it contains a ticker in parentheses
-                    ticker_match = re.search(r'\(([A-Z]{1,5})\)', text)
-                    if ticker_match:
+                if re.match(r'^[A-Z]{1,5}$', text_clean) and not ticker:
+                    if text_clean not in ('LLC', 'INC', 'ETF', 'USD', 'THE', 'AND', 'FOR', 'JR', 'SR'):
+                        ticker = text_clean
+
+                # Date: MM/DD/YYYY
+                elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', text_clean) and not tx_date:
+                    tx_date = text_clean
+
+                # Trade type
+                elif any(kw in text_clean.lower() for kw in ['purchase', 'sale', 'exchange', 'buy', 'sell']):
+                    tx_type = text_clean
+
+                # Amount range
+                elif '$' in text_clean:
+                    amount = text_clean
+
+                # Owner
+                elif text_clean.lower() in ('self', 'spouse', 'joint', 'child', 'dependent'):
+                    owner = text_clean
+
+                # Asset name (check for embedded ticker)
+                elif len(text_clean) > 5 and not asset_name:
+                    ticker_match = re.search(r'\(([A-Z]{1,5})\)', text_clean)
+                    if ticker_match and not ticker:
                         ticker = ticker_match.group(1)
-                        asset_name = text
-                    elif not any(c.isdigit() for c in text[:3]):
-                        asset_name = text
+                    asset_name = text_clean
 
             if ticker:
                 return {
@@ -352,343 +362,183 @@ class SenateScraper:
                     'chamber': 'Senate',
                     'source_link': filing.get('link', ''),
                 }
+
         except Exception as e:
-            logger.debug(f"Error parsing transaction row: {e}")
+            logger.debug(f"Error parsing row: {e}")
 
         return None
 
-    def _parse_structured_content(self, soup: BeautifulSoup, filing: Dict) -> List[Dict]:
-        """Parse non-table structured content from filing pages."""
+    def _parse_unstructured(self, soup: BeautifulSoup, filing: Dict) -> List[Dict]:
+        """Parse transactions from non-table content."""
         transactions = []
+        text = soup.get_text()
 
-        # Look for sections with transaction data
-        sections = soup.find_all(['section', 'div'], class_=re.compile(r'transaction|trade|asset', re.I))
+        # Find ticker patterns followed by transaction info
+        ticker_pattern = r'\b([A-Z]{1,5})\b'
+        date_pattern = r'(\d{1,2}/\d{1,2}/\d{4})'
+        amount_pattern = r'(\$[\d,]+ - \$[\d,]+|\$[\d,]+)'
 
-        for section in sections:
-            text = section.get_text()
-            # Try to extract ticker symbols
-            tickers = re.findall(r'\b([A-Z]{1,5})\b', text)
-            dates = re.findall(r'(\d{1,2}/\d{1,2}/\d{4})', text)
-            amounts = re.findall(r'(\$[\d,]+ - \$[\d,]+|\$[\d,]+)', text)
-            types = re.findall(r'(Purchase|Sale|Exchange|Sale \(Full\)|Sale \(Partial\))', text, re.I)
+        tickers = re.findall(ticker_pattern, text)
+        dates = re.findall(date_pattern, text)
+        amounts = re.findall(amount_pattern, text)
 
-            # Pair them up if we can
-            for i, ticker in enumerate(tickers):
-                if ticker in ('LLC', 'INC', 'ETF', 'USD', 'USA', 'THE', 'AND', 'FOR'):
-                    continue
-                tx = {
-                    'politician': filing.get('name', 'Unknown'),
-                    'ticker': ticker,
-                    'asset_description': ticker,
-                    'trade_type': types[i] if i < len(types) else 'Unknown',
-                    'trade_date': dates[i] if i < len(dates) else filing.get('date', ''),
-                    'amount': amounts[i] if i < len(amounts) else '',
-                    'owner': 'Self',
-                    'disclosure_date': filing.get('date', ''),
-                    'chamber': 'Senate',
-                    'source_link': filing.get('link', ''),
-                }
-                transactions.append(tx)
+        # Filter out common non-ticker words
+        skip_words = {'LLC', 'INC', 'ETF', 'USD', 'USA', 'THE', 'AND', 'FOR', 'JR', 'SR', 'III', 'II', 'IV'}
+        tickers = [t for t in tickers if t not in skip_words]
+
+        for i, ticker in enumerate(tickers[:20]):  # Limit
+            tx = {
+                'politician': filing.get('name', 'Unknown'),
+                'ticker': ticker,
+                'asset_description': ticker,
+                'trade_type': 'Unknown',
+                'trade_date': dates[i] if i < len(dates) else filing.get('date', ''),
+                'amount': amounts[i] if i < len(amounts) else '',
+                'owner': 'Self',
+                'disclosure_date': filing.get('date', ''),
+                'chamber': 'Senate',
+                'source_link': filing.get('link', ''),
+            }
+            transactions.append(tx)
 
         return transactions
 
-    def scrape(self, days_back: int = 120) -> List[Dict]:
+    def scrape(self, days_back: int = 365) -> List[Dict]:
         """
-        Full scrape: fetch recent filings, then get transactions from each.
-        Returns list of raw transaction dicts.
+        Full scrape: fetch PTR list, then transactions from each.
         """
         all_transactions = []
 
-        filings = self.fetch_recent_filings(days_back)
-        logger.info(f"Fetching transactions from {len(filings)} Senate filings...")
+        filings = self.fetch_all_ptrs(days_back)
+        logger.info(f"Fetching transactions from {len(filings)} Senate PTR filings...")
 
         for i, filing in enumerate(filings):
             transactions = self.fetch_filing_transactions(filing)
             all_transactions.extend(transactions)
 
-            # Progress logging
             if (i + 1) % 10 == 0:
-                logger.info(f"  Processed {i + 1}/{len(filings)} filings ({len(all_transactions)} transactions so far)")
+                logger.info(f"  Processed {i + 1}/{len(filings)} filings ({len(all_transactions)} transactions)")
 
-            # Rate limiting
-            if i < len(filings) - 1:
-                time.sleep(0.3)
+            # Limit for testing
+            if i >= 100:
+                logger.info("Hit 100 filing limit for initial test")
+                break
 
-        logger.info(f"Senate scraper: {len(all_transactions)} total transactions from {len(filings)} filings")
+        logger.info(f"Senate scraper: {len(all_transactions)} total transactions")
         return all_transactions
 
 
 class HouseScraper:
     """
     Scrapes the House Clerk Financial Disclosure system.
-    URL: https://disclosures-clerk.house.gov/FinancialDisclosure
+    Based on dannguyen's ASPX form scraping approach.
+
+    The House system uses ASP.NET with ViewState and EventValidation.
+    We extract all form fields and POST back with our search params.
     """
 
-    BASE_URL = "https://disclosures-clerk.house.gov"
-    SEARCH_URL = f"{BASE_URL}/FinancialDisclosure/ViewMemberSearchResult"
-    PTR_SEARCH_URL = f"{BASE_URL}/FinancialDisclosure#702SearchResultPTR"
+    SEARCH_URL = "https://disclosures-clerk.house.gov/FinancialDisclosure"
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        self._last_request = 0
 
-    def fetch_recent_ptrs(self, year: Optional[int] = None) -> List[Dict]:
+    def _rate_limit(self):
+        """Enforce delay between requests."""
+        elapsed = time.time() - self._last_request
+        if elapsed < 1.5:
+            time.sleep(1.5 - elapsed)
+        self._last_request = time.time()
+
+    def scrape(self, days_back: int = 365) -> List[Dict]:
         """
-        Fetch recent Periodic Transaction Reports from the House Clerk.
-        The House system organizes by filing year.
+        Scrape House PTR filings.
+        Note: House filings are mostly PDFs which are hard to parse.
+        We focus on getting filing metadata and any available HTML detail pages.
         """
-        filings = []
-        if year is None:
-            year = datetime.now().year
+        all_transactions = []
+
+        self._rate_limit()
 
         try:
-            # The House Clerk has a search page for PTRs
-            # Try the search endpoint
-            search_url = f"{self.BASE_URL}/FinancialDisclosure/ViewMemberSearchResult"
-            params = {
-                'FilingYear': str(year),
-                'State': '',
-                'District': '',
-                'LastName': '',
-                'FilingType': 'P',  # P = Periodic Transaction Report
-            }
-
-            logger.info(f"Searching House Clerk for {year} PTR filings...")
-            resp = self.session.get(search_url, params=params, timeout=30)
-            logger.info(f"House Clerk search response: {resp.status_code}")
-
-            if resp.status_code == 200:
-                filings = self._parse_house_results(resp.text)
-                logger.info(f"Found {len(filings)} House PTR filings for {year}")
-
-            # Also try the XML/RSS feed if available
-            if not filings:
-                xml_url = f"{self.BASE_URL}/FinancialDisclosure/ViewMemberSearchResult.xml"
-                resp2 = self.session.get(xml_url, params=params, timeout=30)
-                if resp2.status_code == 200:
-                    filings = self._parse_house_xml(resp2.text)
-
-        except Exception as e:
-            logger.error(f"House Clerk search failed: {e}")
-
-        return filings
-
-    def _parse_house_results(self, html: str) -> List[Dict]:
-        """Parse House Clerk search results HTML."""
-        filings = []
-        soup = BeautifulSoup(html, 'html.parser')
-
-        # Find result table
-        table = soup.find('table', class_=re.compile(r'result|data|member', re.I))
-        if not table:
-            table = soup.find('table')
-
-        if not table:
-            # Try finding links to PDF filings directly
-            links = soup.find_all('a', href=re.compile(r'\.pdf$|ptr|transaction', re.I))
-            for link in links:
-                text = link.get_text(strip=True)
-                href = link.get('href', '')
-                if href and text:
-                    if not href.startswith('http'):
-                        href = f"{self.BASE_URL}{href}"
-                    filings.append({
-                        'name': text,
-                        'link': href,
-                        'date': '',
-                        'type': 'PTR',
-                        'chamber': 'House',
-                    })
-            return filings
-
-        rows = table.find_all('tr')
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) >= 3:
-                filing = self._parse_house_row(cells)
-                if filing:
-                    filings.append(filing)
-
-        return filings
-
-    def _parse_house_row(self, cells: list) -> Optional[Dict]:
-        """Parse a House results table row."""
-        try:
-            name = cells[0].get_text(strip=True)
-            # Look for filing link
-            link_tag = None
-            for cell in cells:
-                a = cell.find('a')
-                if a and 'href' in a.attrs:
-                    link_tag = a
-                    break
-
-            link = ''
-            if link_tag:
-                link = link_tag['href']
-                if not link.startswith('http'):
-                    link = f"{self.BASE_URL}{link}"
-
-            # District/State
-            state = cells[1].get_text(strip=True) if len(cells) > 1 else ''
-            date_str = cells[-1].get_text(strip=True) if cells else ''
-
-            # Filing type
-            filing_type = ''
-            for cell in cells:
-                text = cell.get_text(strip=True).lower()
-                if 'ptr' in text or 'periodic' in text or 'transaction' in text:
-                    filing_type = 'PTR'
-                    break
-
-            if name:
-                return {
-                    'name': name,
-                    'link': link,
-                    'date': date_str,
-                    'state': state,
-                    'type': filing_type or 'PTR',
-                    'chamber': 'House',
-                }
-        except Exception:
-            pass
-        return None
-
-    def _parse_house_xml(self, xml_text: str) -> List[Dict]:
-        """Parse House Clerk XML response."""
-        filings = []
-        soup = BeautifulSoup(xml_text, 'html.parser')
-
-        members = soup.find_all('member') or soup.find_all('filing') or soup.find_all('item')
-        for member in members:
-            name = member.find('name') or member.find('title')
-            link = member.find('link') or member.find('url')
-            date = member.find('date') or member.find('filingdate')
-
-            if name:
-                filing = {
-                    'name': name.get_text(strip=True),
-                    'link': link.get_text(strip=True) if link else '',
-                    'date': date.get_text(strip=True) if date else '',
-                    'type': 'PTR',
-                    'chamber': 'House',
-                }
-                filings.append(filing)
-
-        return filings
-
-    def fetch_filing_transactions(self, filing: Dict) -> List[Dict]:
-        """
-        Fetch transactions from a House PTR filing.
-        House filings are often PDFs, which are harder to parse.
-        For HTML filings, we parse the transaction table.
-        """
-        transactions = []
-        link = filing.get('link', '')
-        if not link:
-            return transactions
-
-        # Skip PDF links (would need pdfplumber/PyPDF2)
-        if link.lower().endswith('.pdf'):
-            logger.debug(f"Skipping PDF filing: {link}")
-            return transactions
-
-        try:
-            time.sleep(0.5)
-            resp = self.session.get(link, timeout=15)
+            # Get the search page
+            resp = self.session.get(self.SEARCH_URL, timeout=30)
+            logger.info(f"House search page: {resp.status_code}")
 
             if resp.status_code != 200:
-                return transactions
+                logger.error(f"House search page failed: {resp.status_code}")
+                return []
 
-            soup = BeautifulSoup(resp.text, 'html.parser')
+            soup = BeautifulSoup(resp.text, 'lxml')
 
-            # Similar parsing to Senate
+            # Look for PTR links on the page
+            ptr_links = soup.find_all('a', href=re.compile(r'ptr|transaction|periodic', re.I))
+            logger.info(f"Found {len(ptr_links)} PTR-related links")
+
+            # Also look for any data tables
             tables = soup.find_all('table')
             for table in tables:
-                header_text = table.get_text().lower()[:200]
-                if any(kw in header_text for kw in ['ticker', 'transaction', 'asset', 'amount']):
-                    rows = table.find_all('tr')[1:]
-                    for row in rows:
-                        cells = row.find_all('td')
-                        if len(cells) >= 3:
-                            tx = self._parse_house_transaction(cells, filing)
-                            if tx:
-                                transactions.append(tx)
+                rows = table.find_all('tr')
+                for row in rows[1:]:  # Skip header
+                    cells = row.find_all('td')
+                    if len(cells) >= 3:
+                        tx = self._parse_house_row(cells)
+                        if tx:
+                            all_transactions.append(tx)
+
+            # Note: Full House scraping requires handling PDF files
+            # which needs pdfplumber or similar. For now, we just note
+            # this limitation.
+            if not all_transactions:
+                logger.info("House scraper: Most filings are PDFs, limited parsing available")
 
         except Exception as e:
-            logger.debug(f"Error fetching House filing: {e}")
+            logger.error(f"House scraper error: {e}")
 
-        return transactions
+        logger.info(f"House scraper: {len(all_transactions)} transactions")
+        return all_transactions
 
-    def _parse_house_transaction(self, cells: list, filing: Dict) -> Optional[Dict]:
-        """Parse a House transaction row."""
+    def _parse_house_row(self, cells: list) -> Optional[Dict]:
+        """Parse a House disclosure table row."""
         try:
             cell_texts = [c.get_text(strip=True) for c in cells]
 
+            # Try to find name, ticker, date patterns
+            name = cell_texts[0] if cell_texts else 'Unknown'
+
             ticker = ''
-            tx_type = ''
             tx_date = ''
             amount = ''
-            asset_name = ''
+            tx_type = ''
 
             for text in cell_texts:
                 if re.match(r'^[A-Z]{1,5}$', text) and not ticker:
                     ticker = text
                 elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', text) and not tx_date:
                     tx_date = text
-                elif any(kw in text.lower() for kw in ['purchase', 'sale', 'exchange']):
-                    tx_type = text
                 elif '$' in text:
                     amount = text
-                elif len(text) > 5 and not asset_name:
-                    ticker_match = re.search(r'\(([A-Z]{1,5})\)', text)
-                    if ticker_match:
-                        ticker = ticker_match.group(1)
-                    asset_name = text
+                elif any(kw in text.lower() for kw in ['purchase', 'sale']):
+                    tx_type = text
 
             if ticker:
                 return {
-                    'politician': filing.get('name', 'Unknown'),
+                    'politician': name,
                     'ticker': ticker,
-                    'asset_description': asset_name or ticker,
+                    'asset_description': ticker,
                     'trade_type': tx_type or 'Unknown',
-                    'trade_date': tx_date or filing.get('date', ''),
+                    'trade_date': tx_date,
                     'amount': amount,
                     'owner': 'Self',
-                    'disclosure_date': filing.get('date', ''),
+                    'disclosure_date': tx_date,
                     'chamber': 'House',
-                    'state': filing.get('state', ''),
-                    'source_link': filing.get('link', ''),
                 }
+
         except Exception:
             pass
+
         return None
-
-    def scrape(self, days_back: int = 120) -> List[Dict]:
-        """Full scrape of House PTR filings."""
-        all_transactions = []
-
-        # Search current year and previous year if early in the year
-        years = [datetime.now().year]
-        if datetime.now().month <= 3:
-            years.append(datetime.now().year - 1)
-
-        for year in years:
-            filings = self.fetch_recent_ptrs(year)
-            logger.info(f"Fetching transactions from {len(filings)} House filings ({year})...")
-
-            for i, filing in enumerate(filings):
-                transactions = self.fetch_filing_transactions(filing)
-                all_transactions.extend(transactions)
-
-                if (i + 1) % 10 == 0:
-                    logger.info(f"  Processed {i + 1}/{len(filings)} House filings ({len(all_transactions)} transactions)")
-
-                if i < len(filings) - 1:
-                    time.sleep(0.3)
-
-        logger.info(f"House scraper: {len(all_transactions)} total transactions")
-        return all_transactions
 
 
 class GovScraper:
@@ -700,16 +550,13 @@ class GovScraper:
     def __init__(self):
         self.senate = SenateScraper()
         self.house = HouseScraper()
-
-        # Ensure cache directory exists
         os.makedirs(CACHE_DIR, exist_ok=True)
 
-    def scrape_all(self, days_back: int = 120, use_cache: bool = True) -> List[Dict]:
+    def scrape_all(self, days_back: int = 365, use_cache: bool = True) -> List[Dict]:
         """
         Scrape both Senate and House disclosures.
         Uses local file cache (refreshes every 6 hours).
         """
-        # Check cache
         if use_cache:
             cached = self._load_cache()
             if cached is not None:
@@ -717,28 +564,35 @@ class GovScraper:
                 return cached
 
         all_trades = []
+        errors = []
 
-        # Scrape Senate
+        # Senate
         try:
+            logger.info("Starting Senate scraper...")
             senate_trades = self.senate.scrape(days_back)
             all_trades.extend(senate_trades)
             logger.info(f"Senate: {len(senate_trades)} transactions")
         except Exception as e:
+            errors.append(f"Senate: {e}")
             logger.error(f"Senate scraper error: {e}")
 
-        # Scrape House
+        # House
         try:
+            logger.info("Starting House scraper...")
             house_trades = self.house.scrape(days_back)
             all_trades.extend(house_trades)
             logger.info(f"House: {len(house_trades)} transactions")
         except Exception as e:
+            errors.append(f"House: {e}")
             logger.error(f"House scraper error: {e}")
 
-        # Save to cache
         if all_trades:
             self._save_cache(all_trades)
 
         logger.info(f"Government scraper total: {len(all_trades)} transactions")
+        if errors:
+            logger.warning(f"Errors encountered: {errors}")
+
         return all_trades
 
     def _load_cache(self) -> Optional[List[Dict]]:

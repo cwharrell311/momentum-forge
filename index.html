@@ -864,6 +864,8 @@
         function CongressView({ apiConnected, loading, refreshTrigger }) {
             const [trades, setTrades] = useState([]);
             const [stats, setStats] = useState(null);
+            const [dataSource, setDataSource] = useState(null);
+            const [sourceErrors, setSourceErrors] = useState([]);
             const [congressFilters, setCongressFilters] = useState({
                 chamber: 'all',
                 party: 'all',
@@ -885,6 +887,8 @@
                     if (response.ok) {
                         const data = await response.json();
                         setTrades(data.trades || []);
+                        setDataSource(data.data_source || null);
+                        setSourceErrors(data.source_errors || []);
                     }
                 } catch (e) {
                     console.error('Failed to fetch congress trades:', e);
@@ -939,6 +943,53 @@
 
             return (
                 <div>
+                    {/* Data Source Indicator */}
+                    {dataSource && (
+                        <div style={{
+                            marginBottom: '16px',
+                            padding: '12px 16px',
+                            background: dataSource.includes('failed') || dataSource.includes('NONE')
+                                ? 'var(--accent-red-dim)'
+                                : 'var(--accent-green-dim)',
+                            border: '1px solid ' + (dataSource.includes('failed') || dataSource.includes('NONE')
+                                ? 'var(--accent-red)'
+                                : 'var(--accent-green)'),
+                            borderRadius: '8px',
+                            fontSize: '13px'
+                        }}>
+                            <strong>Data Source:</strong> {dataSource}
+                            {stats?.newest_trade_date && (
+                                <span style={{marginLeft: '16px', color: 'var(--text-secondary)'}}>
+                                    Newest trade: {stats.newest_trade_date}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Error Messages */}
+                    {sourceErrors && sourceErrors.length > 0 && trades.length === 0 && (
+                        <div style={{
+                            marginBottom: '16px',
+                            padding: '12px 16px',
+                            background: 'var(--accent-yellow-dim)',
+                            border: '1px solid var(--accent-yellow)',
+                            borderRadius: '8px',
+                            fontSize: '13px'
+                        }}>
+                            <strong style={{display: 'block', marginBottom: '8px'}}>Data source issues:</strong>
+                            <ul style={{marginLeft: '20px', lineHeight: '1.6'}}>
+                                {sourceErrors.slice(0, 5).map((err, i) => (
+                                    <li key={i}>{err}</li>
+                                ))}
+                            </ul>
+                            <div style={{marginTop: '12px', color: 'var(--text-secondary)'}}>
+                                <strong>To fix:</strong> Get a free Finnhub API key at{' '}
+                                <a href="https://finnhub.io/register" target="_blank" style={{color: 'var(--accent-blue)'}}>finnhub.io/register</a>
+                                {' '}then set: <code style={{background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '4px'}}>export FINNHUB_API_KEY=your_key</code>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="stats-bar">
                         <div className="stat-card">
                             <div className="stat-label">Total Trades</div>

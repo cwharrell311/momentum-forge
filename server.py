@@ -198,15 +198,22 @@ def get_congress_trades():
     politician = request.args.get('politician', '')
 
     # Fetch if empty
+    data_source = None
+    source_errors = []
     if not congress_trades and not congress_loading:
         congress_loading = True
         try:
-            trades = congress_tracker.get_trades(days_back=3650)
+            trades = congress_tracker.get_trades(days_back=365)
             congress_trades = [t.to_dict() for t in trades]
+            data_source = congress_tracker.source_used
+            source_errors = congress_tracker.source_errors
         except Exception as e:
             return jsonify({'error': str(e)}), 500
         finally:
             congress_loading = False
+    else:
+        data_source = congress_tracker.source_used
+        source_errors = congress_tracker.source_errors
 
     filtered = congress_trades.copy()
 
@@ -232,7 +239,9 @@ def get_congress_trades():
     return jsonify({
         'count': len(filtered),
         'total': len(congress_trades),
-        'trades': filtered
+        'trades': filtered,
+        'data_source': data_source,
+        'source_errors': source_errors,
     })
 
 
@@ -250,10 +259,10 @@ def refresh_congress_trades():
         global congress_trades, congress_loading
         try:
             congress_tracker._cache = None  # Clear cache
-            trades = congress_tracker.get_trades(days_back=3650)
+            trades = congress_tracker.get_trades(days_back=365)
             congress_trades = [t.to_dict() for t in trades]
         except Exception as e:
-            pass
+            print(f"Congress refresh error: {e}")
         finally:
             congress_loading = False
 
@@ -313,6 +322,8 @@ def congress_status():
         'loading': congress_loading,
         'has_data': len(congress_trades) > 0,
         'trade_count': len(congress_trades),
+        'data_source': congress_tracker.source_used,
+        'source_errors': congress_tracker.source_errors,
     })
 
 
