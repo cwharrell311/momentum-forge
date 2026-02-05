@@ -861,10 +861,9 @@
         // ==========================================
         // Congress Tracker View
         // ==========================================
-        function CongressView({ apiConnected }) {
+        function CongressView({ apiConnected, loading, onRefresh }) {
             const [trades, setTrades] = useState([]);
             const [stats, setStats] = useState(null);
-            const [loading, setLoading] = useState(false);
             const [congressFilters, setCongressFilters] = useState({
                 chamber: 'all',
                 party: 'all',
@@ -903,28 +902,6 @@
                     console.error('Failed to fetch congress stats:', e);
                 }
             }, []);
-
-            const refreshTrades = async () => {
-                setLoading(true);
-                try {
-                    await fetch(`${API_BASE}/congress/refresh`, { method: 'POST' });
-                    // Poll until loaded
-                    const poll = setInterval(async () => {
-                        const res = await fetch(`${API_BASE}/congress/status`);
-                        if (res.ok) {
-                            const status = await res.json();
-                            if (!status.loading) {
-                                clearInterval(poll);
-                                await fetchTrades();
-                                await fetchStats();
-                                setLoading(false);
-                            }
-                        }
-                    }, 1000);
-                } catch (e) {
-                    setLoading(false);
-                }
-            };
 
             useEffect(() => {
                 if (apiConnected) {
@@ -975,9 +952,6 @@
                     <div className="filters-section">
                         <div className="filters-header">
                             <div className="filters-title">Filters</div>
-                            <button className="scan-btn" onClick={refreshTrades} disabled={loading || !apiConnected} style={{padding: '8px 16px', fontSize: '12px'}}>
-                                {loading ? 'Loading...' : 'Refresh Data'}
-                            </button>
                         </div>
                         <div className="filters-grid">
                             <div className="filter-group">
@@ -1103,6 +1077,8 @@
             const [selectedStock, setSelectedStock] = useState(null);
             const [apiConnected, setApiConnected] = useState(false);
             const [stats, setStats] = useState(null);
+            const [congressLoading, setCongressLoading] = useState(false);
+            const congressViewRef = useRef(null);
             const [filters, setFilters] = useState({
                 minMarketCap: 1,
                 minMomentum: 0,
@@ -1212,6 +1188,32 @@
                 }
             };
 
+            // Refresh congress data (triggered by Run Scan button on congress view)
+            const refreshCongress = async () => {
+                const connected = await checkConnection();
+                if (!connected) {
+                    alert('Cannot connect to backend. Make sure the server is running.');
+                    return;
+                }
+
+                setCongressLoading(true);
+                try {
+                    await fetch(`${API_BASE}/congress/refresh`, { method: 'POST' });
+                    const poll = setInterval(async () => {
+                        const res = await fetch(`${API_BASE}/congress/status`);
+                        if (res.ok) {
+                            const status = await res.json();
+                            if (!status.loading) {
+                                clearInterval(poll);
+                                setCongressLoading(false);
+                            }
+                        }
+                    }, 1000);
+                } catch (e) {
+                    setCongressLoading(false);
+                }
+            };
+
             // Initial connection check
             useEffect(() => {
                 checkConnection();
@@ -1290,20 +1292,18 @@
                                 <div className={`api-dot ${apiConnected ? 'connected' : ''}`}></div>
                                 {apiConnected ? 'Backend Connected' : 'Backend Offline'}
                             </div>
-                            {activeView === 'momentum' && (
-                                <button className="scan-btn" onClick={runScan} disabled={loading || !apiConnected}>
-                                    {loading ? (
-                                        <>
-                                            <div className="spinner"></div>
-                                            Scanning...
-                                        </>
-                                    ) : (
-                                        <>
-                                            ⚡ Run Scan
-                                        </>
-                                    )}
-                                </button>
-                            )}
+                            <button className="scan-btn" onClick={() => activeView === 'momentum' ? runScan() : refreshCongress()} disabled={loading || congressLoading || !apiConnected}>
+                                {(loading || congressLoading) ? (
+                                    <>
+                                        <div className="spinner"></div>
+                                        {activeView === 'momentum' ? 'Scanning...' : 'Loading...'}
+                                    </>
+                                ) : (
+                                    <>
+                                        ⚡ {activeView === 'momentum' ? 'Run Scan' : 'Run Scan'}
+                                    </>
+                                )}
+                            </button>
                         </div>
                     </header>
 
@@ -1323,7 +1323,7 @@
                         </div>
                     )}
 
-                    {activeView === 'congress' && <CongressView apiConnected={apiConnected} />}
+                    {activeView === 'congress' && <CongressView apiConnected={apiConnected} loading={congressLoading} />}
 
                     {activeView === 'momentum' && (
                         <div>
