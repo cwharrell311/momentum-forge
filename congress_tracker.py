@@ -3,6 +3,7 @@ Congressional Stock Trade Tracker
 Fetches and processes stock trades reported by members of Congress.
 
 Data source priority (tries in order, uses first that works):
+  0. Government scraper (free, current, scrapes official EFD/House Clerk sites)
   1. Capitol Trades API (free, current, Senate + House)
   2. Senate/House Stock Watcher websites (free, current)
   3. FMP API (requires paid plan)
@@ -16,6 +17,12 @@ from dataclasses import dataclass, asdict
 import logging
 import re
 import json
+
+try:
+    from gov_scraper import GovScraper
+    GOV_SCRAPER_AVAILABLE = True
+except ImportError:
+    GOV_SCRAPER_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -155,6 +162,7 @@ class CongressTracker:
         self._cache = None
         self._cache_time = None
         self._cache_ttl = 3600  # Cache for 1 hour
+        self._gov_scraper = GovScraper() if GOV_SCRAPER_AVAILABLE else None
 
     def get_trades(self, days_back: int = 365) -> List[CongressTrade]:
         """
@@ -173,6 +181,12 @@ class CongressTracker:
 
         trades = []
         source_used = None
+
+        # Method 0: Government scraper (free, current, official sources)
+        if self._gov_scraper:
+            trades = self._fetch_gov_scraper(days_back)
+            if trades:
+                source_used = "Government EFD Scraper"
 
         # Method 1: Capitol Trades (free, current data, both chambers)
         if not trades:
@@ -208,6 +222,76 @@ class CongressTracker:
 
         logger.info(f"Source: {source_used} | Total trades: {len(trades)}")
         return trades
+
+    # ------------------------------------------------------------------
+    # Source 0: Government scraper (official disclosure sites)
+    # ------------------------------------------------------------------
+    def _fetch_gov_scraper(self, days_back: int) -> List[CongressTrade]:
+        """Scrape official government disclosure sites for current trades."""
+        trades = []
+        try:
+            logger.info("Running government disclosure scraper...")
+            raw_trades = self._gov_scraper.scrape_all(days_back=days_back)
+
+            for item in raw_trades:
+                trade = self._parse_gov_trade(item)
+                if trade:
+                    trades.append(trade)
+
+            logger.info(f"Government scraper: {len(trades)} trades parsed")
+        except Exception as e:
+            logger.error(f"Government scraper failed: {e}")
+
+        return trades
+
+    def _parse_gov_trade(self, item: Dict) -> Optional[CongressTrade]:
+        """Parse a raw transaction dict from the government scraper."""
+        try:
+            ticker = item.get('ticker', '').strip()
+            if not ticker or ticker in ('--', 'N/A', ''):
+                return None
+
+            politician = item.get('politician', 'Unknown')
+            party, state = self._lookup_senator_info(politician)
+            if item.get('state'):
+                state = item['state']
+
+            trade_date = self._standardize_date(item.get('trade_date', ''))
+            disclosure_date = self._standardize_date(item.get('disclosure_date', ''))
+            if not disclosure_date:
+                disclosure_date = trade_date
+
+            days_to_disclose = 0
+            if trade_date and disclosure_date and trade_date != disclosure_date:
+                try:
+                    td = datetime.strptime(trade_date, '%Y-%m-%d')
+                    dd = datetime.strptime(disclosure_date, '%Y-%m-%d')
+                    days_to_disclose = max(0, (dd - td).days)
+                except ValueError:
+                    pass
+
+            amount_str = item.get('amount', '$0')
+            amount_low, amount_high = self._parse_amount_range(amount_str)
+
+            return CongressTrade(
+                politician=politician,
+                party=party,
+                chamber=item.get('chamber', 'Senate'),
+                state=state,
+                ticker=ticker.upper(),
+                asset_description=item.get('asset_description', ticker),
+                trade_type=self._normalize_trade_type(item.get('trade_type', 'Unknown')),
+                trade_date=trade_date,
+                disclosure_date=disclosure_date,
+                amount_range=amount_str,
+                amount_low=amount_low,
+                amount_high=amount_high,
+                days_to_disclose=days_to_disclose,
+                owner=item.get('owner', 'Self'),
+            )
+        except Exception as e:
+            logger.debug(f"Error parsing gov trade: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Source 1: Capitol Trades (capitoltrades.com)
