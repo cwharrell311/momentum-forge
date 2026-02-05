@@ -84,7 +84,7 @@ class MomentumScreener:
         self._ticker_cache = {}
         self._universe_cache = None
     
-    def get_universe(self, min_market_cap_b: float = 10.0) -> List[str]:
+    def get_universe(self, min_market_cap_b: float = 5.0) -> List[str]:
         """
         Get full list of US-traded stocks from NYSE and NASDAQ.
         Fetches from FMP's stock list endpoint, with Wikipedia fallback.
@@ -239,7 +239,7 @@ class MomentumScreener:
             
             # Basic validation
             market_cap = info.get('marketCap', 0)
-            if not market_cap or market_cap < 10e9:  # < $10B
+            if not market_cap or market_cap < 5e9:  # < $5B
                 return None
             
             # Get historical data for technicals
@@ -582,7 +582,7 @@ class MomentumScreener:
             momentum_score=data['momentum_score']
         )
     
-    def run_scan(self, min_market_cap_b: float = 10.0, max_workers: int = 10,
+    def run_scan(self, min_market_cap_b: float = 5.0, max_workers: int = 10,
                  progress_callback=None) -> List[StockSignal]:
         """
         Run full market scan.
@@ -648,7 +648,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='MomentumForge Stock Screener')
     parser.add_argument('--fmp-key', type=str, help='Financial Modeling Prep API key')
-    parser.add_argument('--min-cap', type=float, default=10.0, help='Minimum market cap in billions')
+    parser.add_argument('--min-cap', type=float, default=5.0, help='Minimum market cap in billions')
     parser.add_argument('--output', type=str, default='results.json', help='Output file path')
     parser.add_argument('--format', choices=['json', 'csv'], default='json', help='Output format')
     args = parser.parse_args()
