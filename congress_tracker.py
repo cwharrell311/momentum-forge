@@ -650,15 +650,24 @@ class CongressTracker:
             # Look for Next.js data payload
             match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
             if not match:
+                logger.info("Capitol Trades: No __NEXT_DATA__ found, trying direct HTML parse")
+                # Try direct HTML table parsing as fallback
+                trades = self._parse_capitol_trades_table(html)
                 return trades
 
             next_data = json.loads(match.group(1))
-            # Navigate the Next.js data structure
+            # Navigate the Next.js data structure - try multiple paths
             page_props = next_data.get('props', {}).get('pageProps', {})
-            trade_data = page_props.get('trades', page_props.get('data', []))
+
+            # Log available keys for debugging
+            logger.info(f"Capitol Trades pageProps keys: {list(page_props.keys())[:10]}")
+
+            trade_data = page_props.get('trades', page_props.get('data', page_props.get('tradeList', [])))
 
             if isinstance(trade_data, dict):
-                trade_data = trade_data.get('data', trade_data.get('trades', []))
+                trade_data = trade_data.get('data', trade_data.get('trades', trade_data.get('results', [])))
+
+            logger.info(f"Capitol Trades: Found {len(trade_data) if isinstance(trade_data, list) else 0} items in JSON")
 
             for item in trade_data:
                 trade = self._parse_capitol_trade_item(item)
@@ -666,7 +675,71 @@ class CongressTracker:
                     trades.append(trade)
 
         except (json.JSONDecodeError, KeyError) as e:
-            logger.debug(f"Failed to parse Capitol Trades HTML: {e}")
+            logger.info(f"Failed to parse Capitol Trades JSON: {e}, trying HTML table")
+
+        return trades
+
+    def _parse_capitol_trades_table(self, html: str) -> List[CongressTrade]:
+        """Fallback: Parse Capitol Trades HTML table directly."""
+        trades = []
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # Look for trade rows - Capitol Trades uses various table/list structures
+            rows = soup.find_all('tr') or soup.find_all('div', class_=re.compile(r'trade|row', re.I))
+
+            for row in rows[:100]:  # Limit
+                cells = row.find_all(['td', 'span', 'div'])
+                if len(cells) < 3:
+                    continue
+
+                ticker = ''
+                name = ''
+                tx_type = ''
+                tx_date = ''
+                amount = ''
+
+                for cell in cells:
+                    text = cell.get_text(strip=True)
+                    # Ticker pattern
+                    if re.match(r'^[A-Z]{1,5}$', text) and text not in ('BUY', 'SELL', 'USD'):
+                        ticker = text
+                    # Date pattern
+                    elif re.match(r'\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}', text):
+                        tx_date = text
+                    # Trade type
+                    elif text.lower() in ('buy', 'sell', 'purchase', 'sale'):
+                        tx_type = text
+                    # Amount
+                    elif '$' in text:
+                        amount = text
+                    # Name (longer text)
+                    elif len(text) > 5 and not name:
+                        name = text
+
+                if ticker:
+                    amount_low, amount_high = self._parse_amount_range(amount)
+                    trades.append(CongressTrade(
+                        politician=name or 'Unknown',
+                        party='Unknown',
+                        chamber='Unknown',
+                        state='',
+                        ticker=ticker,
+                        asset_description=ticker,
+                        trade_type=self._normalize_trade_type(tx_type),
+                        trade_date=self._standardize_date(tx_date),
+                        disclosure_date=self._standardize_date(tx_date),
+                        amount_range=amount,
+                        amount_low=amount_low,
+                        amount_high=amount_high,
+                        days_to_disclose=0,
+                        owner='Self',
+                    ))
+
+            logger.info(f"Capitol Trades HTML table: {len(trades)} trades parsed")
+        except Exception as e:
+            logger.debug(f"Capitol Trades table parse error: {e}")
 
         return trades
 

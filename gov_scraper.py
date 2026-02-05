@@ -219,6 +219,7 @@ class SenateScraper:
         """Parse a row from the PTR list API response."""
         try:
             if not isinstance(row, list) or len(row) < 4:
+                logger.debug(f"Row too short or not a list: {row}")
                 return None
 
             # Row format: [name_html, office, report_type_html, date]
@@ -226,30 +227,53 @@ class SenateScraper:
             report_html = str(row[2])
             date_str = str(row[3]).strip()
 
-            # Extract name from HTML
+            # Log first row for debugging
+            if not hasattr(self, '_logged_sample'):
+                logger.info(f"Sample PTR row[0] (name): {name_html[:200]}")
+                logger.info(f"Sample PTR row[2] (report): {report_html[:200]}")
+                self._logged_sample = True
+
+            # Extract name from HTML - try multiple patterns
+            name = ''
+            # Pattern 1: Text between > and <
             name_match = re.search(r'>([^<]+)<', name_html)
-            name = name_match.group(1).strip() if name_match else ''
+            if name_match:
+                name = name_match.group(1).strip()
+            # Pattern 2: Just get any text content
+            if not name:
+                name = re.sub(r'<[^>]+>', '', name_html).strip()
 
-            # Extract report link from HTML
+            # Extract report link from HTML - try multiple patterns
+            link = ''
+            # Pattern 1: href in report cell
             link_match = re.search(r'href=["\']([^"\']+)', report_html)
-            link = link_match.group(1).strip() if link_match else ''
-
+            if link_match:
+                link = link_match.group(1).strip()
+            # Pattern 2: href in name cell
             if not link:
-                # Try name cell
                 link_match = re.search(r'href=["\']([^"\']+)', name_html)
-                link = link_match.group(1).strip() if link_match else ''
+                if link_match:
+                    link = link_match.group(1).strip()
+            # Pattern 3: Look for /search/view/paper/ or /search/view/ptr/ paths
+            if not link:
+                link_match = re.search(r'(/search/view/(?:paper|ptr)/[^"\'>\s]+)', name_html + report_html)
+                if link_match:
+                    link = link_match.group(1)
 
             if link and not link.startswith('http'):
                 link = f"https://efdsearch.senate.gov{link}"
 
-            if name and link:
+            # Be more lenient - accept if we have either name or link
+            if name or link:
                 return {
-                    'name': name,
+                    'name': name or 'Unknown Senator',
                     'link': link,
                     'date': date_str,
                     'type': 'PTR',
                     'chamber': 'Senate',
                 }
+            else:
+                logger.debug(f"Could not extract name or link from row")
         except Exception as e:
             logger.debug(f"Error parsing PTR row: {e}")
 
