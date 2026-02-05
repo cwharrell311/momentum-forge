@@ -23,6 +23,14 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Try to use lxml parser, fall back to html.parser
+try:
+    import lxml
+    HTML_PARSER = 'lxml'
+except ImportError:
+    HTML_PARSER = 'html.parser'
+    logger.info("lxml not available, using html.parser")
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -81,7 +89,7 @@ class SenateScraper:
                 logger.warning(f"Unexpected redirect to: {landing_resp.url}")
 
             # Extract csrfmiddlewaretoken from form
-            soup = BeautifulSoup(landing_resp.text, 'lxml')
+            soup = BeautifulSoup(landing_resp.text, HTML_PARSER)
             csrf_input = soup.find(attrs={'name': 'csrfmiddlewaretoken'})
 
             if not csrf_input or not csrf_input.get('value'):
@@ -273,7 +281,7 @@ class SenateScraper:
                 logger.debug(f"Filing page returned {resp.status_code}: {link}")
                 return transactions
 
-            soup = BeautifulSoup(resp.text, 'lxml')
+            soup = BeautifulSoup(resp.text, HTML_PARSER)
 
             # Find transaction tables
             tables = soup.find_all('table')
@@ -470,7 +478,7 @@ class HouseScraper:
                 logger.error(f"House search page failed: {resp.status_code}")
                 return []
 
-            soup = BeautifulSoup(resp.text, 'lxml')
+            soup = BeautifulSoup(resp.text, HTML_PARSER)
 
             # Look for PTR links on the page
             ptr_links = soup.find_all('a', href=re.compile(r'ptr|transaction|periodic', re.I))

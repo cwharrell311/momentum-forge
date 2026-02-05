@@ -4,10 +4,11 @@ Fetches and processes stock trades reported by members of Congress.
 
 Data source priority (tries in order, uses first that works):
   0. Government scraper (free, current, scrapes official EFD/House Clerk sites)
-  1. Finnhub API (free tier available, current data)
-  2. Capitol Trades (website scraping, may be blocked)
-  3. Stock Watcher S3 buckets (may still have current data)
-  4. FMP API (requires paid plan)
+  1. Quiver Quantitative (free, no API key needed)
+  2. Finnhub API (free tier available, current data)
+  3. Capitol Trades (website scraping, may be blocked)
+  4. Stock Watcher S3 buckets (may still have current data)
+  5. FMP API (requires paid plan)
 
 NOTE: No fallback to 2020 historical data - we only show current trades.
 If no data source works, an empty result is returned with a clear error message.
@@ -223,9 +224,21 @@ class CongressTracker:
             self._source_errors.append("Gov scraper: not available (import failed)")
             logger.warning("✗ Government scraper not available")
 
-        # Source 1: Finnhub API (free tier available)
+        # Source 1: Quiver Quantitative (free, no API key needed)
+        if not trades:
+            logger.info(">>> Trying Source 1: Quiver Quantitative...")
+            try:
+                trades = self._fetch_quiver_trades()
+                if trades:
+                    self._source_used = "Quiver Quantitative (free)"
+                    logger.info(f"✓ Quiver: {len(trades)} trades")
+            except Exception as e:
+                self._source_errors.append(f"Quiver: {e}")
+                logger.error(f"✗ Quiver failed: {e}")
+
+        # Source 2: Finnhub API (free tier available)
         if not trades and self.finnhub_api_key:
-            logger.info(">>> Trying Source 1: Finnhub API...")
+            logger.info(">>> Trying Source 2: Finnhub API...")
             try:
                 trades = self._fetch_finnhub_trades(days_back)
                 if trades:
@@ -238,9 +251,9 @@ class CongressTracker:
             self._source_errors.append("Finnhub: no API key (set FINNHUB_API_KEY env var)")
             logger.info("✗ Finnhub: no API key set")
 
-        # Source 2: Capitol Trades website
+        # Source 3: Capitol Trades website
         if not trades:
-            logger.info(">>> Trying Source 2: Capitol Trades website...")
+            logger.info(">>> Trying Source 3: Capitol Trades website...")
             try:
                 trades = self._fetch_capitol_trades()
                 if trades:
@@ -250,9 +263,9 @@ class CongressTracker:
                 self._source_errors.append(f"Capitol Trades: {e}")
                 logger.error(f"✗ Capitol Trades failed: {e}")
 
-        # Source 3: Stock Watcher S3 buckets (check if they have current data)
+        # Source 4: Stock Watcher S3 buckets (check if they have current data)
         if not trades:
-            logger.info(">>> Trying Source 3: Stock Watcher S3 buckets...")
+            logger.info(">>> Trying Source 4: Stock Watcher S3 buckets...")
             try:
                 trades = self._fetch_stock_watcher_s3()
                 if trades:
@@ -276,9 +289,9 @@ class CongressTracker:
                 self._source_errors.append(f"S3 buckets: {e}")
                 logger.error(f"✗ S3 buckets failed: {e}")
 
-        # Source 4: FMP API (paid)
+        # Source 5: FMP API (paid)
         if not trades and self.fmp_api_key:
-            logger.info(">>> Trying Source 4: FMP API...")
+            logger.info(">>> Trying Source 5: FMP API...")
             try:
                 trades = self._fetch_fmp_trades(days_back)
                 if trades:
@@ -334,7 +347,119 @@ class CongressTracker:
         return trades
 
     # ------------------------------------------------------------------
-    # Source 1: Finnhub API (free tier available)
+    # Source 1: Quiver Quantitative (free, no API key needed)
+    # ------------------------------------------------------------------
+    def _fetch_quiver_trades(self) -> List[CongressTrade]:
+        """
+        Fetch congressional trades from Quiver Quantitative.
+        Free public data, no API key required.
+        """
+        trades = []
+
+        # Quiver has a public-facing page with congressional trading data
+        urls_to_try = [
+            "https://www.quiverquant.com/congresstrading/",
+            "https://api.quiverquant.com/beta/live/congresstrading",
+        ]
+
+        for url in urls_to_try:
+            try:
+                logger.info(f"Trying Quiver URL: {url}")
+                resp = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+                logger.info(f"Quiver response: {resp.status_code}")
+
+                if resp.status_code != 200:
+                    continue
+
+                # Check if it's JSON (API) or HTML (website)
+                content_type = resp.headers.get('content-type', '')
+
+                if 'json' in content_type:
+                    data = resp.json()
+                    if isinstance(data, list):
+                        for item in data:
+                            trade = self._parse_quiver_trade(item)
+                            if trade:
+                                trades.append(trade)
+                elif 'html' in content_type:
+                    # Try to extract __NEXT_DATA__ or similar
+                    trades = self._parse_quiver_html(resp.text)
+
+                if trades:
+                    logger.info(f"Quiver: {len(trades)} trades from {url}")
+                    break
+
+            except Exception as e:
+                logger.debug(f"Quiver URL {url} failed: {e}")
+                continue
+
+        return trades
+
+    def _parse_quiver_trade(self, item: Dict) -> Optional[CongressTrade]:
+        """Parse a Quiver Quantitative trade item."""
+        try:
+            ticker = item.get('Ticker', item.get('ticker', ''))
+            if not ticker:
+                return None
+
+            name = item.get('Representative', item.get('Name', item.get('name', 'Unknown')))
+            tx_date = item.get('TransactionDate', item.get('transaction_date', ''))
+            disclosure_date = item.get('ReportDate', item.get('disclosure_date', tx_date))
+            tx_type = item.get('Transaction', item.get('type', 'Unknown'))
+            amount = item.get('Range', item.get('amount', ''))
+            party = item.get('Party', item.get('party', 'Unknown'))
+            chamber = item.get('House', item.get('chamber', 'House'))
+            if chamber in ('House', 'house', 'H'):
+                chamber = 'House'
+            else:
+                chamber = 'Senate'
+
+            amount_low, amount_high = self._parse_amount_range(amount)
+
+            return CongressTrade(
+                politician=name,
+                party=self._normalize_party(party),
+                chamber=chamber,
+                state='',
+                ticker=ticker.upper(),
+                asset_description=item.get('Description', ticker),
+                trade_type=self._normalize_trade_type(tx_type),
+                trade_date=self._standardize_date(tx_date),
+                disclosure_date=self._standardize_date(disclosure_date),
+                amount_range=amount,
+                amount_low=amount_low,
+                amount_high=amount_high,
+                days_to_disclose=0,
+                owner='Self',
+            )
+        except Exception as e:
+            logger.debug(f"Error parsing Quiver trade: {e}")
+            return None
+
+    def _parse_quiver_html(self, html: str) -> List[CongressTrade]:
+        """Extract trade data from Quiver Quantitative HTML page."""
+        trades = []
+        try:
+            # Look for Next.js data or embedded JSON
+            import re
+            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+            if match:
+                next_data = json.loads(match.group(1))
+                page_props = next_data.get('props', {}).get('pageProps', {})
+                trade_data = page_props.get('trades', page_props.get('data', []))
+
+                if isinstance(trade_data, list):
+                    for item in trade_data:
+                        trade = self._parse_quiver_trade(item)
+                        if trade:
+                            trades.append(trade)
+        except Exception as e:
+            logger.debug(f"Quiver HTML parse error: {e}")
+
+        return trades
+
+    # ------------------------------------------------------------------
+    # Source 2: Finnhub API (free tier available)
     # ------------------------------------------------------------------
     def _fetch_finnhub_trades(self, days_back: int) -> List[CongressTrade]:
         """
@@ -480,7 +605,7 @@ class CongressTracker:
             return None
 
     # ------------------------------------------------------------------
-    # Source 1: Capitol Trades (capitoltrades.com)
+    # Source 3: Capitol Trades (capitoltrades.com)
     # ------------------------------------------------------------------
     def _fetch_capitol_trades(self) -> List[CongressTrade]:
         """
@@ -623,7 +748,7 @@ class CongressTracker:
             return None
 
     # ------------------------------------------------------------------
-    # Source 3: Stock Watcher S3 buckets (check for current data)
+    # Source 4: Stock Watcher S3 buckets (check for current data)
     # ------------------------------------------------------------------
     def _fetch_stock_watcher_s3(self) -> List[CongressTrade]:
         """
@@ -720,7 +845,7 @@ class CongressTracker:
             return None
 
     # ------------------------------------------------------------------
-    # Source 3: FMP API (paid)
+    # Source 5: FMP API (paid)
     # ------------------------------------------------------------------
     def _fetch_fmp_trades(self, days_back: int) -> List[CongressTrade]:
         """Fetch trades from FMP Senate/House trading endpoints."""
