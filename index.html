@@ -742,6 +742,7 @@
             });
             
             const pollInterval = useRef(null);
+            const scanningRef = useRef(false);
 
             // Check API connection
             const checkConnection = useCallback(async () => {
@@ -792,8 +793,9 @@
                         const status = await response.json();
                         setLoadingMessage(status.message);
                         setLoadingProgress(status.progress);
-                        
-                        if (!status.running && loading) {
+
+                        if (!status.running && scanningRef.current) {
+                            scanningRef.current = false;
                             setLoading(false);
                             clearInterval(pollInterval.current);
                             await fetchResults();
@@ -803,7 +805,7 @@
                 } catch (e) {
                     console.error('Failed to poll status:', e);
                 }
-            }, [loading, fetchResults, fetchStats]);
+            }, [fetchResults, fetchStats]);
 
             // Start scan
             const runScan = async () => {
@@ -814,6 +816,7 @@
                 }
 
                 setLoading(true);
+                scanningRef.current = true;
                 setLoadingProgress(0);
                 setLoadingMessage('Starting scan...');
                 setStocks([]);
@@ -830,10 +833,12 @@
                         pollInterval.current = setInterval(pollStatus, 1000);
                     } else {
                         setLoading(false);
+                        scanningRef.current = false;
                         alert('Failed to start scan');
                     }
                 } catch (e) {
                     setLoading(false);
+                    scanningRef.current = false;
                     alert('Failed to connect to backend');
                 }
             };
