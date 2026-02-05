@@ -86,8 +86,8 @@ class MomentumScreener:
     
     def get_universe(self, min_market_cap_b: float = 1.0) -> List[str]:
         """
-        Get list of stocks from S&P 500 and NASDAQ-100 indices.
-        These are the most liquid, actively traded stocks.
+        Get full list of US-traded stocks from NYSE and NASDAQ.
+        Fetches from FMP's stock list endpoint, with Wikipedia fallback.
         """
         # Return cached universe if available
         if self._universe_cache:
@@ -95,60 +95,139 @@ class MomentumScreener:
 
         universe = []
 
+        # Method 1: Try FMP's full stock list (available on free tier)
         if self.fmp_api_key:
             try:
-                # Fetch S&P 500 constituents
-                sp500_url = f"{self.FMP_BASE_URL}/sp500_constituent?apikey={self.fmp_api_key}"
-                sp500_response = requests.get(sp500_url, timeout=30)
-                logger.info(f"S&P 500 API response status: {sp500_response.status_code}")
+                stock_list_url = f"{self.FMP_BASE_URL}/stock/list?apikey={self.fmp_api_key}"
+                response = requests.get(stock_list_url, timeout=60)
+                logger.info(f"FMP stock list API response status: {response.status_code}")
 
-                if sp500_response.status_code == 200:
-                    sp500_data = sp500_response.json()
-                    if isinstance(sp500_data, list):
-                        for stock in sp500_data:
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list):
+                        for stock in data:
                             symbol = stock.get('symbol', '')
-                            if symbol and '.' not in symbol:
-                                universe.append(symbol)
-                        logger.info(f"Fetched {len(sp500_data)} S&P 500 stocks from FMP")
+                            exchange = stock.get('exchangeShortName', '')
+                            stock_type = stock.get('type', '')
 
-                # Fetch NASDAQ-100 constituents
-                nasdaq100_url = f"{self.FMP_BASE_URL}/nasdaq_constituent?apikey={self.fmp_api_key}"
-                nasdaq100_response = requests.get(nasdaq100_url, timeout=30)
-                logger.info(f"NASDAQ-100 API response status: {nasdaq100_response.status_code}")
-
-                if nasdaq100_response.status_code == 200:
-                    nasdaq100_data = nasdaq100_response.json()
-                    if isinstance(nasdaq100_data, list):
-                        for stock in nasdaq100_data:
-                            symbol = stock.get('symbol', '')
-                            if symbol and '.' not in symbol:
+                            # Filter: US exchanges, stocks only, no special symbols
+                            if (exchange in ['NYSE', 'NASDAQ', 'AMEX'] and
+                                stock_type == 'stock' and
+                                symbol and
+                                '.' not in symbol and  # No class shares like BRK.A
+                                '-' not in symbol and  # No warrants like SPAC-WT
+                                '^' not in symbol and  # No indices
+                                len(symbol) <= 5):     # Normal ticker length
                                 universe.append(symbol)
-                        logger.info(f"Fetched {len(nasdaq100_data)} NASDAQ-100 stocks from FMP")
+
+                        logger.info(f"Fetched {len(universe)} US stocks from FMP stock list")
 
             except Exception as e:
-                logger.error(f"Error fetching stock universe from FMP: {e}")
+                logger.error(f"Error fetching stock list from FMP: {e}")
+
+        # Method 2: Try Wikipedia for S&P indices (covers large/mid/small caps)
+        if not universe:
+            logger.info("Trying Wikipedia for stock universe...")
+            universe = self._fetch_wikipedia_stocks()
+
+        # Method 3: Fallback to curated list
+        if not universe:
+            logger.warning("Using fallback stock universe (200 stocks)")
+            universe = self._get_fallback_universe()
 
         # Remove duplicates and sort
         universe = sorted(list(set(universe)))
 
-        # If API failed or returned nothing, use fallback
-        if not universe:
-            logger.warning("Using fallback stock universe")
-            universe = [
-                # Mega caps
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
-                'V', 'XOM', 'JPM', 'WMT', 'MA', 'PG', 'HD', 'CVX', 'MRK', 'ABBV',
-                'LLY', 'PEP', 'KO', 'COST', 'AVGO', 'TMO', 'MCD', 'CSCO', 'ACN', 'ABT',
-                # Large cap tech/growth
-                'ADBE', 'ORCL', 'NFLX', 'INTC', 'QCOM', 'INTU', 'IBM', 'NOW', 'AMAT', 'ADP',
-                'CRM', 'AMD', 'ISRG', 'BKNG', 'MDLZ', 'ADI', 'REGN', 'VRTX', 'GILD', 'PANW',
-                # High growth
-                'PLTR', 'COIN', 'SNOW', 'NET', 'SHOP', 'SQ', 'UBER', 'ABNB', 'DASH', 'CRWD',
-            ]
-
         logger.info(f"Total universe: {len(universe)} stocks")
         self._universe_cache = universe
         return universe
+
+    def _fetch_wikipedia_stocks(self) -> List[str]:
+        """
+        Fetch stock lists from Wikipedia (S&P 500, S&P 400, S&P 600).
+        This gives ~1,500 stocks covering large, mid, and small caps.
+        """
+        universe = []
+
+        wiki_sources = [
+            ('S&P 500', 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'),
+            ('S&P 400', 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies'),
+            ('S&P 600', 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'),
+        ]
+
+        for name, url in wiki_sources:
+            try:
+                response = requests.get(url, timeout=30, headers={
+                    'User-Agent': 'Mozilla/5.0 (compatible; MomentumScreener/1.0)'
+                })
+
+                if response.status_code == 200:
+                    # Parse HTML table - ticker is in first column
+                    # Using pandas to parse HTML tables
+                    tables = pd.read_html(response.text)
+                    if tables:
+                        df = tables[0]
+                        # Find the symbol column (usually 'Symbol' or 'Ticker')
+                        symbol_col = None
+                        for col in df.columns:
+                            col_str = str(col).lower()
+                            if 'symbol' in col_str or 'ticker' in col_str:
+                                symbol_col = col
+                                break
+
+                        if symbol_col is None and len(df.columns) > 0:
+                            symbol_col = df.columns[0]  # Assume first column
+
+                        if symbol_col is not None:
+                            symbols = df[symbol_col].astype(str).tolist()
+                            for sym in symbols:
+                                # Clean up symbol
+                                sym = sym.strip().upper()
+                                if sym and len(sym) <= 5 and sym.isalpha():
+                                    universe.append(sym)
+
+                            logger.info(f"Fetched {len(symbols)} stocks from Wikipedia {name}")
+
+            except Exception as e:
+                logger.warning(f"Error fetching {name} from Wikipedia: {e}")
+
+        return universe
+
+    def _get_fallback_universe(self) -> List[str]:
+        """
+        Fallback list of 200 quality stocks across market caps.
+        """
+        return [
+            # Mega caps (30)
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
+            'V', 'XOM', 'JPM', 'WMT', 'MA', 'PG', 'HD', 'CVX', 'MRK', 'ABBV',
+            'LLY', 'PEP', 'KO', 'COST', 'AVGO', 'TMO', 'MCD', 'CSCO', 'ACN', 'ABT',
+            # Large cap tech/growth (30)
+            'ADBE', 'ORCL', 'NFLX', 'INTC', 'QCOM', 'INTU', 'IBM', 'NOW', 'AMAT', 'ADP',
+            'CRM', 'AMD', 'ISRG', 'BKNG', 'MDLZ', 'ADI', 'REGN', 'VRTX', 'GILD', 'PANW',
+            'PLTR', 'COIN', 'SNOW', 'NET', 'SHOP', 'SQ', 'UBER', 'ABNB', 'DASH', 'CRWD',
+            # Large cap value/dividend (30)
+            'BAC', 'WFC', 'GS', 'MS', 'C', 'AXP', 'BLK', 'SCHW', 'USB', 'PNC',
+            'T', 'VZ', 'TMUS', 'CMCSA', 'DIS', 'NFLX', 'CHTR', 'EA', 'TTWO', 'WBD',
+            'UPS', 'FDX', 'CAT', 'DE', 'BA', 'RTX', 'LMT', 'GE', 'HON', 'MMM',
+            # Mid caps - Tech (20)
+            'DDOG', 'ZS', 'MDB', 'OKTA', 'HUBS', 'TWLO', 'U', 'BILL', 'DOCN', 'PATH',
+            'GTLB', 'ESTC', 'CFLT', 'SUMO', 'NEWR', 'DT', 'FIVN', 'RNG', 'ZI', 'ASAN',
+            # Mid caps - Healthcare (20)
+            'DXCM', 'IDXX', 'IQV', 'ALGN', 'HOLX', 'TECH', 'MTD', 'WAT', 'BIO', 'PKI',
+            'VEEV', 'CDNS', 'ANSS', 'PAYC', 'CPRT', 'ODFL', 'POOL', 'WST', 'MPWR', 'LULU',
+            # Mid caps - Industrials/Consumer (20)
+            'AXON', 'TRMB', 'GNRC', 'ZBRA', 'TER', 'ENTG', 'SWKS', 'FFIV', 'JBHT', 'CHRW',
+            'EXPD', 'LSTR', 'SAIA', 'XPO', 'WERN', 'KNX', 'HUBG', 'SNDR', 'ARCB', 'MATX',
+            # Small caps - Growth (25)
+            'CELH', 'ONON', 'DUOL', 'RKLB', 'IONQ', 'AFRM', 'SOFI', 'UPST', 'HOOD', 'OPEN',
+            'RIVN', 'LCID', 'FSR', 'CHPT', 'BLNK', 'EVGO', 'PTRA', 'NKLA', 'HYLN', 'GOEV',
+            'DNA', 'BEAM', 'CRSP', 'EDIT', 'NTLA',
+            # Small caps - Value (25)
+            'TMHC', 'MTH', 'CCS', 'MHO', 'TPH', 'KBH', 'MDC', 'LGIH', 'CVCO', 'SKY',
+            'DDS', 'M', 'JWN', 'KSS', 'BURL', 'ROST', 'TJX', 'GPS', 'ANF', 'AEO',
+            'CASY', 'ULTA', 'FIVE', 'OLLI', 'DG',
+        ]
     
     def get_stock_data(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
