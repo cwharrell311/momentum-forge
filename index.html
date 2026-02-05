@@ -861,7 +861,7 @@
         // ==========================================
         // Congress Tracker View
         // ==========================================
-        function CongressView({ apiConnected, loading, onRefresh }) {
+        function CongressView({ apiConnected, loading, refreshTrigger }) {
             const [trades, setTrades] = useState([]);
             const [stats, setStats] = useState(null);
             const [congressFilters, setCongressFilters] = useState({
@@ -903,12 +903,21 @@
                 }
             }, []);
 
+            // Fetch on mount and when filters change
             useEffect(() => {
                 if (apiConnected) {
                     fetchTrades();
                     fetchStats();
                 }
             }, [apiConnected, fetchTrades, fetchStats]);
+
+            // Re-fetch when refresh completes (refreshTrigger increments)
+            useEffect(() => {
+                if (refreshTrigger > 0 && apiConnected) {
+                    fetchTrades();
+                    fetchStats();
+                }
+            }, [refreshTrigger]);
 
             const getDelayClass = (days) => {
                 if (days > 45) return 'late';
@@ -1078,6 +1087,7 @@
             const [apiConnected, setApiConnected] = useState(false);
             const [stats, setStats] = useState(null);
             const [congressLoading, setCongressLoading] = useState(false);
+            const [congressRefreshTrigger, setCongressRefreshTrigger] = useState(0);
             const congressViewRef = useRef(null);
             const [filters, setFilters] = useState({
                 minMarketCap: 1,
@@ -1206,6 +1216,7 @@
                             if (!status.loading) {
                                 clearInterval(poll);
                                 setCongressLoading(false);
+                                setCongressRefreshTrigger(prev => prev + 1);
                             }
                         }
                     }, 1000);
@@ -1323,7 +1334,7 @@
                         </div>
                     )}
 
-                    {activeView === 'congress' && <CongressView apiConnected={apiConnected} loading={congressLoading} />}
+                    {activeView === 'congress' && <CongressView apiConnected={apiConnected} loading={congressLoading} refreshTrigger={congressRefreshTrigger} />}
 
                     {activeView === 'momentum' && (
                         <div>

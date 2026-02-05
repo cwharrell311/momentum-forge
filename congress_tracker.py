@@ -1,11 +1,12 @@
 """
 Congressional Stock Trade Tracker
 Fetches and processes stock trades reported by members of Congress.
-Data sources: FMP API (primary), Capitol Trades scraping (fallback).
+Data sources:
+  1. FMP API (primary, requires paid plan)
+  2. Senate Stock Watcher GitHub data (free, Senate trades only)
 """
 
 import requests
-import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
@@ -15,6 +16,97 @@ import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Senator party/state lookup for enrichment
+# Covers recent and current senators (2020-2025+)
+SENATOR_PARTIES = {
+    'A. Mitchell McConnell': ('Republican', 'KY'),
+    'Angus S. King': ('Independent', 'ME'),
+    'Benjamin E. Sasse': ('Republican', 'NE'),
+    'Benjamin L Cardin': ('Democrat', 'MD'),
+    'Bill Cassidy': ('Republican', 'LA'),
+    'Bill Hagerty': ('Republican', 'TN'),
+    'Charles E. Grassley': ('Republican', 'IA'),
+    'Charles E. Schumer': ('Democrat', 'NY'),
+    'Chris Van Hollen': ('Democrat', 'MD'),
+    'Christopher A Coons': ('Democrat', 'DE'),
+    'Christopher A. Coons': ('Democrat', 'DE'),
+    'Cindy Hyde-Smith': ('Republican', 'MS'),
+    'Cory A. Booker': ('Democrat', 'NJ'),
+    'Dan Sullivan': ('Republican', 'AK'),
+    'David A. Perdue': ('Republican', 'GA'),
+    'Debbie Stabenow': ('Democrat', 'MI'),
+    'Dianne Feinstein': ('Democrat', 'CA'),
+    'Gary C. Peters': ('Democrat', 'MI'),
+    'Jack Reed': ('Democrat', 'RI'),
+    'Jacklyn S Rosen': ('Democrat', 'NV'),
+    'Jacklyn S. Rosen': ('Democrat', 'NV'),
+    'James Lankford': ('Republican', 'OK'),
+    'Jerry Moran': ('Republican', 'KS'),
+    'Jim Inhofe': ('Republican', 'OK'),
+    'Jim Risch': ('Republican', 'ID'),
+    'John Barrasso': ('Republican', 'WY'),
+    'John Boozman': ('Republican', 'AR'),
+    'John Cornyn': ('Republican', 'TX'),
+    'John Hickenlooper': ('Democrat', 'CO'),
+    'John N Kennedy': ('Republican', 'LA'),
+    'John N. Kennedy': ('Republican', 'LA'),
+    'Joseph Manchin': ('Democrat', 'WV'),
+    'John Hoeven': ('Republican', 'ND'),
+    'John Thune': ('Republican', 'SD'),
+    'John W. Hickenlooper': ('Democrat', 'CO'),
+    'Jon Ossoff': ('Democrat', 'GA'),
+    'Kelly Loeffler': ('Republican', 'GA'),
+    'Kevin Cramer': ('Republican', 'ND'),
+    'Kyrsten Sinema': ('Independent', 'AZ'),
+    'Ladda Tammy Duckworth': ('Democrat', 'IL'),
+    'Marco Rubio': ('Republican', 'FL'),
+    'Maria Cantwell': ('Democrat', 'WA'),
+    'Margaret Wood Hassan': ('Democrat', 'NH'),
+    'Mark Kelly': ('Democrat', 'AZ'),
+    'Mark R. Warner': ('Democrat', 'VA'),
+    'Markwayne Mullin': ('Republican', 'OK'),
+    'Michael B. Enzi': ('Republican', 'WY'),
+    'Michael F. Bennet': ('Democrat', 'CO'),
+    'Mike Braun': ('Republican', 'IN'),
+    'Mike Crapo': ('Republican', 'ID'),
+    'Mike Rounds': ('Republican', 'SD'),
+    'Mitt Romney': ('Republican', 'UT'),
+    'Pat Roberts': ('Republican', 'KS'),
+    'Patrick J. Toomey': ('Republican', 'PA'),
+    'Patty Murray': ('Democrat', 'WA'),
+    'Pete Ricketts': ('Republican', 'NE'),
+    'Rafael E Cruz': ('Republican', 'TX'),
+    'Rafael E. Cruz': ('Republican', 'TX'),
+    'Rand Paul': ('Republican', 'KY'),
+    'Raphael G. Warnock': ('Democrat', 'GA'),
+    'Richard Blumenthal': ('Democrat', 'CT'),
+    'Richard Burr': ('Republican', 'NC'),
+    'Rick Scott': ('Republican', 'FL'),
+    'Robert Menendez': ('Democrat', 'NJ'),
+    'Robert P. Casey': ('Democrat', 'PA'),
+    'Roger F. Wicker': ('Republican', 'MS'),
+    'Ron L Wyden': ('Democrat', 'OR'),
+    'Ron Johnson': ('Republican', 'WI'),
+    'Roy Blunt': ('Republican', 'MO'),
+    'Sheldon Whitehouse': ('Democrat', 'RI'),
+    'Shelley Moore Capito': ('Republican', 'WV'),
+    'Steve Daines': ('Republican', 'MT'),
+    'Susan M. Collins': ('Republican', 'ME'),
+    'Tammy Duckworth': ('Democrat', 'IL'),
+    'Ted Cruz': ('Republican', 'TX'),
+    'Thomas R. Carper': ('Democrat', 'DE'),
+    'Thomas R. Tillis': ('Republican', 'NC'),
+    'Thomas Udall': ('Democrat', 'NM'),
+    'Timothy M Kaine': ('Democrat', 'VA'),
+    'Timothy M. Kaine': ('Democrat', 'VA'),
+    'Tim Scott': ('Republican', 'SC'),
+    'Todd Young': ('Republican', 'IN'),
+    'Tommy Tuberville': ('Republican', 'AL'),
+    'Tina Smith': ('Democrat', 'MN'),
+    'William Cassidy': ('Republican', 'LA'),
+    'William F. Hagerty': ('Republican', 'TN'),
+}
 
 
 @dataclass
@@ -44,6 +136,7 @@ class CongressTracker:
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api/v4"
+    SENATE_WATCHER_URL = "https://raw.githubusercontent.com/timothycarambat/senate-stock-watcher-data/master/aggregate/all_transactions.json"
 
     def __init__(self, fmp_api_key: Optional[str] = None):
         self.fmp_api_key = fmp_api_key
@@ -51,12 +144,12 @@ class CongressTracker:
         self._cache_time = None
         self._cache_ttl = 3600  # Cache for 1 hour
 
-    def get_trades(self, days_back: int = 90) -> List[CongressTrade]:
+    def get_trades(self, days_back: int = 365) -> List[CongressTrade]:
         """
-        Fetch recent congressional trades. Tries FMP first, then Capitol Trades.
+        Fetch recent congressional trades. Tries FMP first, then Senate Stock Watcher.
         """
         # Return cache if fresh
-        if self._cache and self._cache_time:
+        if self._cache is not None and self._cache_time:
             age = (datetime.now() - self._cache_time).total_seconds()
             if age < self._cache_ttl:
                 logger.info(f"Returning {len(self._cache)} cached trades")
@@ -64,17 +157,17 @@ class CongressTracker:
 
         trades = []
 
-        # Method 1: Try FMP API
+        # Method 1: Try FMP API (requires paid plan)
         if self.fmp_api_key:
             trades = self._fetch_fmp_trades(days_back)
 
-        # Method 2: Fallback to Capitol Trades scraping
+        # Method 2: Fallback to Senate Stock Watcher (free, always works)
         if not trades:
-            logger.info("FMP congressional data unavailable, trying Capitol Trades...")
-            trades = self._fetch_capitol_trades(days_back)
+            logger.info("FMP congressional data unavailable, trying Senate Stock Watcher...")
+            trades = self._fetch_senate_watcher(days_back)
 
-        # Sort by disclosure date (newest first)
-        trades.sort(key=lambda t: t.disclosure_date, reverse=True)
+        # Sort by trade date (newest first)
+        trades.sort(key=lambda t: t.trade_date, reverse=True)
 
         # Cache results
         self._cache = trades
@@ -141,7 +234,6 @@ class CongressTracker:
             amount = item.get('amount', item.get('range', '$0 - $0'))
             amount_low, amount_high = self._parse_amount_range(amount)
 
-            # Determine party from name or separate field
             party = item.get('party', '')
             politician = item.get('firstName', item.get('representative', ''))
             last_name = item.get('lastName', '')
@@ -170,191 +262,162 @@ class CongressTracker:
             logger.debug(f"Error parsing FMP trade: {e}")
             return None
 
-    def _fetch_capitol_trades(self, days_back: int) -> List[CongressTrade]:
-        """Scrape trades from Capitol Trades website."""
-        trades = []
-        pages_to_fetch = 3  # First 3 pages should cover ~90 days
-
-        for page in range(1, pages_to_fetch + 1):
-            try:
-                url = f"https://www.capitoltrades.com/trades?page={page}"
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                }
-                response = requests.get(url, headers=headers, timeout=30)
-                logger.info(f"Capitol Trades page {page} response: {response.status_code}")
-
-                if response.status_code == 200:
-                    page_trades = self._parse_capitol_trades_html(response.text)
-                    trades.extend(page_trades)
-                    logger.info(f"Parsed {len(page_trades)} trades from Capitol Trades page {page}")
-
-                    if len(page_trades) == 0:
-                        break  # No more data
-
-                    time.sleep(1)  # Rate limit
-                else:
-                    logger.warning(f"Capitol Trades returned {response.status_code}")
-                    break
-
-            except Exception as e:
-                logger.error(f"Error fetching Capitol Trades page {page}: {e}")
-                break
-
-        return trades
-
-    def _parse_capitol_trades_html(self, html: str) -> List[CongressTrade]:
-        """Parse Capitol Trades HTML into trade objects."""
+    def _fetch_senate_watcher(self, days_back: int) -> List[CongressTrade]:
+        """
+        Fetch trades from Senate Stock Watcher GitHub data.
+        Source: https://github.com/timothycarambat/senate-stock-watcher-data
+        Contains ~8000+ Senate stock trades with ticker, senator, date, type, amount.
+        Note: This is a historical dataset. All records are loaded regardless of days_back.
+        """
         trades = []
 
         try:
-            tables = pd.read_html(html)
-            if not tables:
-                logger.warning("No tables found in Capitol Trades HTML")
+            logger.info("Fetching Senate Stock Watcher data from GitHub...")
+            response = requests.get(self.SENATE_WATCHER_URL, timeout=60)
+            logger.info(f"Senate Stock Watcher response: {response.status_code}")
+
+            if response.status_code != 200:
+                logger.error(f"Senate Stock Watcher returned {response.status_code}")
                 return trades
 
-            df = tables[0]
-            logger.info(f"Capitol Trades table columns: {list(df.columns)}")
+            data = response.json()
+            logger.info(f"Senate Stock Watcher: {len(data)} total records")
 
-            for _, row in df.iterrows():
+            for item in data:
                 try:
-                    trade = self._parse_capitol_row(row)
+                    trade = self._parse_senate_watcher_trade(item)
                     if trade:
                         trades.append(trade)
                 except Exception as e:
-                    logger.debug(f"Error parsing Capitol Trades row: {e}")
+                    logger.debug(f"Error parsing Senate Watcher trade: {e}")
                     continue
 
+            logger.info(f"Senate Stock Watcher: {len(trades)} stock trades loaded")
+
+        except requests.exceptions.Timeout:
+            logger.error("Senate Stock Watcher request timed out")
+        except requests.exceptions.ConnectionError:
+            logger.error("Senate Stock Watcher connection error")
         except Exception as e:
-            logger.warning(f"Error parsing Capitol Trades HTML with pandas: {e}")
-            # Fallback: try regex parsing
-            trades = self._parse_capitol_trades_regex(html)
+            logger.error(f"Error fetching Senate Stock Watcher data: {e}")
 
         return trades
 
-    def _parse_capitol_row(self, row) -> Optional[CongressTrade]:
-        """Parse a single row from Capitol Trades table."""
-        try:
-            # Capitol Trades columns vary, try common patterns
-            row_dict = row.to_dict() if hasattr(row, 'to_dict') else {}
-            row_values = [str(v) for v in row.values]
-            row_str = ' | '.join(row_values)
+    def _parse_senate_watcher_trade(self, item: Dict) -> Optional[CongressTrade]:
+        """
+        Parse a Senate Stock Watcher JSON record.
 
-            # Try to extract politician name (usually first column)
-            politician = str(row.iloc[0]) if len(row) > 0 else 'Unknown'
-
-            # Find ticker - look for uppercase 1-5 letter strings
-            ticker = ''
-            for val in row_values:
-                val = str(val).strip()
-                match = re.search(r'\b([A-Z]{1,5})\b', val)
-                if match and match.group(1) not in ['N', 'A', 'THE', 'AND', 'FOR', 'BUY', 'SELL', 'USD', 'NAN']:
-                    ticker = match.group(1)
-                    break
-
-            if not ticker:
-                return None
-
-            # Determine trade type
-            trade_type = 'Unknown'
-            for val in row_values:
-                val_lower = str(val).lower()
-                if 'buy' in val_lower or 'purchase' in val_lower:
-                    trade_type = 'Purchase'
-                    break
-                elif 'sell' in val_lower or 'sale' in val_lower:
-                    trade_type = 'Sale'
-                    break
-
-            # Find amounts
-            amount_range = ''
-            amount_low = 0.0
-            amount_high = 0.0
-            for val in row_values:
-                if '$' in str(val):
-                    amount_range = str(val)
-                    amount_low, amount_high = self._parse_amount_range(amount_range)
-                    break
-
-            # Find dates
-            trade_date = ''
-            disclosure_date = ''
-            dates_found = []
-            for val in row_values:
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})', str(val))
-                if date_match:
-                    dates_found.append(date_match.group(1))
-
-            if len(dates_found) >= 2:
-                trade_date = dates_found[0]
-                disclosure_date = dates_found[1]
-            elif len(dates_found) == 1:
-                trade_date = dates_found[0]
-                disclosure_date = dates_found[0]
-
-            # Determine party/chamber
-            party = 'Unknown'
-            chamber = 'Unknown'
-            for val in row_values:
-                val_str = str(val)
-                if 'Democrat' in val_str or '(D)' in val_str or val_str.strip() == 'D':
-                    party = 'Democrat'
-                elif 'Republican' in val_str or '(R)' in val_str or val_str.strip() == 'R':
-                    party = 'Republican'
-                elif 'Independent' in val_str or '(I)' in val_str or val_str.strip() == 'I':
-                    party = 'Independent'
-
-                if 'Senator' in val_str or 'Senate' in val_str:
-                    chamber = 'Senate'
-                elif 'Representative' in val_str or 'House' in val_str or 'Rep.' in val_str:
-                    chamber = 'House'
-
-            days_to_disclose = 0
-            if trade_date and disclosure_date:
-                try:
-                    for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y']:
-                        try:
-                            td = datetime.strptime(trade_date, fmt)
-                            dd = datetime.strptime(disclosure_date, fmt)
-                            days_to_disclose = (dd - td).days
-                            trade_date = td.strftime('%Y-%m-%d')
-                            disclosure_date = dd.strftime('%Y-%m-%d')
-                            break
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
-
-            return CongressTrade(
-                politician=politician,
-                party=party,
-                chamber=chamber,
-                state='',
-                ticker=ticker,
-                asset_description=ticker,
-                trade_type=trade_type,
-                trade_date=trade_date,
-                disclosure_date=disclosure_date,
-                amount_range=amount_range,
-                amount_low=amount_low,
-                amount_high=amount_high,
-                days_to_disclose=days_to_disclose,
-                owner='Self',
-            )
-        except Exception as e:
-            logger.debug(f"Error parsing Capitol row: {e}")
+        Record format:
+        {
+            "transaction_date": "11/10/2020",
+            "owner": "Spouse",
+            "ticker": "BYND",
+            "asset_description": "Beyond Meat, Inc.",
+            "asset_type": "Stock",
+            "type": "Sale (Full)",
+            "amount": "$50,001 - $100,000",
+            "comment": "--",
+            "senator": "Ron L Wyden",
+            "ptr_link": "https://efdsearch.senate.gov/..."
+        }
+        """
+        ticker = item.get('ticker', '').strip()
+        if not ticker or ticker == '--' or ticker == 'N/A' or ticker == '':
             return None
 
-    def _parse_capitol_trades_regex(self, html: str) -> List[CongressTrade]:
-        """Fallback regex parser for Capitol Trades HTML."""
-        # This is a best-effort parser if pandas can't parse the tables
-        logger.info("Using regex fallback for Capitol Trades parsing")
-        return []
+        # Skip non-stock assets
+        asset_type = item.get('asset_type', '')
+        if asset_type and asset_type.lower() not in ('stock', 'stock option', ''):
+            return None
+
+        senator = item.get('senator', 'Unknown').strip()
+
+        # Look up party and state
+        party, state = self._lookup_senator_info(senator)
+
+        # Parse transaction date (MM/DD/YYYY format)
+        raw_date = item.get('transaction_date', '').strip()
+        trade_date = ''
+        if raw_date:
+            try:
+                dt = datetime.strptime(raw_date, '%m/%d/%Y')
+                trade_date = dt.strftime('%Y-%m-%d')
+            except ValueError:
+                trade_date = raw_date
+
+        # Disclosure date: estimate from ptr_link or use trade_date
+        # The dataset doesn't have a separate disclosure date field,
+        # so we'll use the trade date as an approximation
+        disclosure_date = trade_date
+
+        amount_str = item.get('amount', '$0 - $0')
+        amount_low, amount_high = self._parse_amount_range(amount_str)
+
+        trade_type = self._normalize_trade_type(item.get('type', 'Unknown'))
+        owner = item.get('owner', 'Self').strip()
+        if owner == '--':
+            owner = 'Self'
+
+        return CongressTrade(
+            politician=senator,
+            party=party,
+            chamber='Senate',
+            state=state,
+            ticker=ticker.upper(),
+            asset_description=item.get('asset_description', ticker),
+            trade_type=trade_type,
+            trade_date=trade_date,
+            disclosure_date=disclosure_date,
+            amount_range=amount_str,
+            amount_low=amount_low,
+            amount_high=amount_high,
+            days_to_disclose=0,  # Not available in this dataset
+            owner=owner,
+        )
+
+    def _lookup_senator_info(self, senator_name: str) -> tuple:
+        """Look up party and state for a senator by name."""
+        # Direct lookup
+        if senator_name in SENATOR_PARTIES:
+            return SENATOR_PARTIES[senator_name]
+
+        # Normalize: remove periods, commas, Jr/Sr/III suffixes, extra spaces
+        normalized = re.sub(r'[.,]', '', senator_name)
+        normalized = re.sub(r'\s+(Jr|Sr|III|II|IV)\s*$', '', normalized, flags=re.IGNORECASE)
+        normalized = ' '.join(normalized.split())  # collapse whitespace
+
+        # Try normalized direct lookup
+        for known_name, info in SENATOR_PARTIES.items():
+            known_normalized = re.sub(r'[.,]', '', known_name)
+            known_normalized = ' '.join(known_normalized.split())
+            if normalized.lower() == known_normalized.lower():
+                return info
+
+        # Try partial matching (last name + first initial)
+        name_parts = normalized.split()
+        if name_parts:
+            # Get last real name part (skip Jr, etc.)
+            last_name = name_parts[-1].lower()
+            for known_name, (party, state) in SENATOR_PARTIES.items():
+                known_parts = known_name.replace('.', '').split()
+                known_last = known_parts[-1].lower()
+                if last_name == known_last:
+                    # Verify first initial matches
+                    if len(name_parts) > 1 and len(known_parts) > 1:
+                        if name_parts[0][0].lower() == known_parts[0][0].lower():
+                            return (party, state)
+
+        return ('Unknown', '')
 
     def _parse_amount_range(self, amount_str: str) -> tuple:
         """Parse amount range string like '$1,001 - $15,000' into (low, high)."""
         try:
+            # Handle "Over $X" format
+            over_match = re.search(r'Over\s+\$?([\d,]+)', str(amount_str), re.IGNORECASE)
+            if over_match:
+                val = float(over_match.group(1).replace(',', ''))
+                return val, val * 2  # Estimate upper bound
+
             amounts = re.findall(r'[\$]?([\d,]+)', str(amount_str))
             if len(amounts) >= 2:
                 low = float(amounts[0].replace(',', ''))

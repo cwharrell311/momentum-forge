@@ -201,7 +201,7 @@ def get_congress_trades():
     if not congress_trades and not congress_loading:
         congress_loading = True
         try:
-            trades = congress_tracker.get_trades(days_back=90)
+            trades = congress_tracker.get_trades(days_back=3650)
             congress_trades = [t.to_dict() for t in trades]
         except Exception as e:
             return jsonify({'error': str(e)}), 500
@@ -250,7 +250,7 @@ def refresh_congress_trades():
         global congress_trades, congress_loading
         try:
             congress_tracker._cache = None  # Clear cache
-            trades = congress_tracker.get_trades(days_back=90)
+            trades = congress_tracker.get_trades(days_back=3650)
             congress_trades = [t.to_dict() for t in trades]
         except Exception as e:
             pass
