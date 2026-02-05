@@ -886,7 +886,7 @@
             };
 
             const getScoreClass = (score) => {
-                if (score >= 80) return 'high';
+                if (score >= 60) return 'high';
                 if (score >= 60) return 'medium';
                 return 'low';
             };
@@ -952,8 +952,8 @@
                             <div className="stat-value green">{stats?.signals_found || filteredStocks.length || '—'}</div>
                         </div>
                         <div className="stat-card">
-                            <div className="stat-label">High Conviction (80+)</div>
-                            <div className="stat-value yellow">{stats?.high_conviction || filteredStocks.filter(s => s.momentum_score >= 80).length || '—'}</div>
+                            <div className="stat-label">High Conviction (60+)</div>
+                            <div className="stat-value yellow">{stats?.high_conviction || filteredStocks.filter(s => s.momentum_score >= 60).length || '—'}</div>
                         </div>
                         <div className="stat-card">
                             <div className="stat-label">Bullish Options Flow</div>

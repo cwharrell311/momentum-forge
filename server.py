@@ -162,7 +162,7 @@ def get_stats():
             'avg_score': 0
         })
 
-    high_conviction = len([r for r in scan_results if r['momentum_score'] >= 80])
+    high_conviction = len([r for r in scan_results if r['momentum_score'] >= 60])
     bullish_options = len([r for r in scan_results if r.get('options_volume_ratio', 0) and r['options_volume_ratio'] > 1.5])
     avg_score = sum(r['momentum_score'] for r in scan_results) / len(scan_results)
 
