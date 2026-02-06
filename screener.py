@@ -565,6 +565,9 @@ class MomentumScreener:
         Args:
             ticker: Stock ticker symbol
         """
+        # Small delay to avoid rate limiting
+        time.sleep(0.1)
+
         # Get base data
         data = self.get_stock_data(ticker)
         if not data:
@@ -637,7 +640,7 @@ class MomentumScreener:
             momentum_score=data['momentum_score']
         )
     
-    def run_scan(self, min_market_cap_b: float = 2.0, max_workers: int = 10,
+    def run_scan(self, min_market_cap_b: float = 2.0, max_workers: int = 5,
                  progress_callback=None) -> List[StockSignal]:
         """
         Run full market scan.
