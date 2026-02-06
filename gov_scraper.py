@@ -354,17 +354,29 @@ class SenateScraper:
             amount = ''
             owner = ''
 
+            # US state codes to skip (not tickers)
+            skip_words = {'LLC', 'INC', 'ETF', 'USD', 'THE', 'AND', 'FOR', 'JR', 'SR', 'III', 'II', 'IV',
+                          'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+                          'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+                          'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+                          'VA','WA','WV','WI','WY','DC', 'US', 'USA', 'I', 'A', 'S', 'D', 'R', 'N', 'E', 'W'}
+
             for text in cell_texts:
                 text_clean = text.strip()
 
-                # Ticker: 1-5 uppercase letters
-                if re.match(r'^[A-Z]{1,5}$', text_clean) and not ticker:
-                    if text_clean not in ('LLC', 'INC', 'ETF', 'USD', 'THE', 'AND', 'FOR', 'JR', 'SR'):
+                # Ticker: 2-5 uppercase letters (require at least 2 to avoid single letters)
+                if re.match(r'^[A-Z]{2,5}$', text_clean) and not ticker:
+                    if text_clean not in skip_words:
                         ticker = text_clean
 
-                # Date: MM/DD/YYYY
+                # Date: MM/DD/YYYY - validate year is reasonable (2020-2027)
                 elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', text_clean) and not tx_date:
-                    tx_date = text_clean
+                    # Extract year and validate
+                    year_match = re.search(r'/(\d{4})$', text_clean)
+                    if year_match:
+                        year = int(year_match.group(1))
+                        if 2020 <= year <= 2027:
+                            tx_date = text_clean
 
                 # Trade type
                 elif any(kw in text_clean.lower() for kw in ['purchase', 'sale', 'exchange', 'buy', 'sell']):
@@ -378,11 +390,13 @@ class SenateScraper:
                 elif text_clean.lower() in ('self', 'spouse', 'joint', 'child', 'dependent'):
                     owner = text_clean
 
-                # Asset name (check for embedded ticker)
+                # Asset name (check for embedded ticker like "Apple Inc (AAPL)")
                 elif len(text_clean) > 5 and not asset_name:
-                    ticker_match = re.search(r'\(([A-Z]{1,5})\)', text_clean)
+                    ticker_match = re.search(r'\(([A-Z]{2,5})\)', text_clean)
                     if ticker_match and not ticker:
-                        ticker = ticker_match.group(1)
+                        potential_ticker = ticker_match.group(1)
+                        if potential_ticker not in skip_words:
+                            ticker = potential_ticker
                     asset_name = text_clean
 
             if ticker:
@@ -409,33 +423,53 @@ class SenateScraper:
         transactions = []
         text = soup.get_text()
 
-        # Find ticker patterns followed by transaction info
-        ticker_pattern = r'\b([A-Z]{1,5})\b'
-        date_pattern = r'(\d{1,2}/\d{1,2}/\d{4})'
+        # Skip words that are not tickers (state codes, common words, single letters)
+        skip_words = {'LLC', 'INC', 'ETF', 'USD', 'USA', 'THE', 'AND', 'FOR', 'JR', 'SR', 'III', 'II', 'IV',
+                      'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+                      'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+                      'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+                      'VA','WA','WV','WI','WY','DC', 'US', 'PDF', 'PTR', 'FD', 'OGE',
+                      'I', 'A', 'S', 'D', 'R', 'N', 'E', 'W', 'O', 'M', 'C', 'B', 'T', 'P', 'F', 'G', 'H', 'J', 'K', 'L', 'Q', 'U', 'V', 'X', 'Y', 'Z'}
+
+        # Find ticker patterns - require 2-5 uppercase letters
+        ticker_pattern = r'\b([A-Z]{2,5})\b'
+        # Date pattern - only match dates with reasonable years (2020-2027)
+        date_pattern = r'(\d{1,2}/\d{1,2}/(202[0-7]))'
         amount_pattern = r'(\$[\d,]+ - \$[\d,]+|\$[\d,]+)'
 
         tickers = re.findall(ticker_pattern, text)
-        dates = re.findall(date_pattern, text)
+        date_matches = re.findall(date_pattern, text)
+        dates = [m[0] for m in date_matches]  # date_matches returns tuples, get full match
         amounts = re.findall(amount_pattern, text)
 
-        # Filter out common non-ticker words
-        skip_words = {'LLC', 'INC', 'ETF', 'USD', 'USA', 'THE', 'AND', 'FOR', 'JR', 'SR', 'III', 'II', 'IV'}
+        # Filter out non-ticker words
         tickers = [t for t in tickers if t not in skip_words]
 
-        for i, ticker in enumerate(tickers[:20]):  # Limit
-            tx = {
-                'politician': filing.get('name', 'Unknown'),
-                'ticker': ticker,
-                'asset_description': ticker,
-                'trade_type': 'Unknown',
-                'trade_date': dates[i] if i < len(dates) else filing.get('date', ''),
-                'amount': amounts[i] if i < len(amounts) else '',
-                'owner': 'Self',
-                'disclosure_date': filing.get('date', ''),
-                'chamber': 'Senate',
-                'source_link': filing.get('link', ''),
-            }
-            transactions.append(tx)
+        # Only create transactions if we found valid dates
+        # This is a fallback parser so be conservative
+        if not dates:
+            logger.debug(f"_parse_unstructured: No valid dates found in filing")
+            return transactions
+
+        # Match tickers with dates/amounts more carefully
+        # Only use if we have roughly matching counts
+        if len(tickers) > 0 and len(dates) > 0:
+            # Limit to min of tickers and dates to avoid mismatches
+            count = min(len(tickers), len(dates), 10)  # Limit to 10 max
+            for i in range(count):
+                tx = {
+                    'politician': filing.get('name', 'Unknown'),
+                    'ticker': tickers[i],
+                    'asset_description': tickers[i],
+                    'trade_type': 'Unknown',
+                    'trade_date': dates[i],
+                    'amount': amounts[i] if i < len(amounts) else '',
+                    'owner': 'Self',
+                    'disclosure_date': filing.get('date', ''),
+                    'chamber': 'Senate',
+                    'source_link': filing.get('link', ''),
+                }
+                transactions.append(tx)
 
         return transactions
 
