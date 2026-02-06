@@ -29,7 +29,7 @@ class SECEdgar:
 
     # SEC requires a User-Agent with contact info
     HEADERS = {
-        "User-Agent": "MomentumForge/1.0 (contact@example.com)",
+        "User-Agent": "MomentumForge/1.0 (cwharrell@gmail.com)",
         "Accept-Encoding": "gzip, deflate"
     }
 
