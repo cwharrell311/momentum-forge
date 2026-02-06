@@ -99,12 +99,11 @@ class MomentumScreener:
 
         universe = []
 
-        # Method 1: Try Wikipedia for S&P indices (covers large/mid/small caps ~1500 stocks)
-        # This is the sweet spot - enough coverage without overwhelming Yahoo Finance
-        logger.info("Fetching S&P 500/400/600 from Wikipedia...")
+        # Method 1: Try Wikipedia for S&P 500 (~500 stocks)
+        logger.info("Fetching S&P 500 from Wikipedia...")
         universe = self._fetch_wikipedia_stocks()
 
-        # Method 2: If Wikipedia fails, use SEC EDGAR ticker list (but limit to avoid rate limits)
+        # Method 2: If Wikipedia fails, use SEC EDGAR ticker list (limited to 500)
         if not universe and self.sec_edgar._ticker_to_cik:
             # Get all tickers from SEC, filter for valid format
             all_sec_tickers = []
@@ -115,8 +114,8 @@ class MomentumScreener:
                     '.' not in ticker and
                     '-' not in ticker):
                     all_sec_tickers.append(ticker)
-            # Limit to 1500 to avoid Yahoo rate limits
-            universe = sorted(all_sec_tickers)[:1500]
+            # Limit to 500 to avoid Yahoo rate limits
+            universe = sorted(all_sec_tickers)[:500]
             logger.info(f"Using {len(universe)} tickers from SEC EDGAR (limited from {len(all_sec_tickers)})")
 
         # Method 3: Fallback to curated list
@@ -133,15 +132,14 @@ class MomentumScreener:
 
     def _fetch_wikipedia_stocks(self) -> List[str]:
         """
-        Fetch stock lists from Wikipedia (S&P 500, S&P 400, S&P 600).
-        This gives ~1,500 stocks covering large, mid, and small caps.
+        Fetch S&P 500 stock list from Wikipedia (~500 stocks).
+        Limited to S&P 500 only to avoid Yahoo Finance rate limits.
         """
         universe = []
 
         wiki_sources = [
             ('S&P 500', 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'),
-            ('S&P 400', 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies'),
-            ('S&P 600', 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'),
+            # Removed S&P 400/600 to reduce total stocks and avoid rate limits
         ]
 
         for name, url in wiki_sources:
