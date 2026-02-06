@@ -236,6 +236,18 @@ class CongressTracker:
                 self._source_errors.append(f"Quiver: {e}")
                 logger.error(f"✗ Quiver failed: {e}")
 
+        # Source 1.5: Unusual Whales (free congressional data)
+        if not trades:
+            logger.info(">>> Trying Source 1.5: Unusual Whales...")
+            try:
+                trades = self._fetch_unusual_whales()
+                if trades:
+                    self._source_used = "Unusual Whales (free)"
+                    logger.info(f"✓ Unusual Whales: {len(trades)} trades")
+            except Exception as e:
+                self._source_errors.append(f"Unusual Whales: {e}")
+                logger.error(f"✗ Unusual Whales failed: {e}")
+
         # Source 2: Finnhub API (free tier available)
         if not trades and self.finnhub_api_key:
             logger.info(">>> Trying Source 2: Finnhub API...")
@@ -442,19 +454,172 @@ class CongressTracker:
         try:
             # Look for Next.js data or embedded JSON
             import re
-            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+
+            # Log HTML sample for debugging
+            logger.info(f"Quiver HTML length: {len(html)}, sample: {html[:200]}")
+
+            # Try __NEXT_DATA__
+            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if match:
+                next_data = json.loads(match.group(1))
+                logger.info(f"Quiver __NEXT_DATA__ keys: {list(next_data.keys())}")
+                page_props = next_data.get('props', {}).get('pageProps', {})
+                logger.info(f"Quiver pageProps keys: {list(page_props.keys())[:15]}")
+
+                # Try multiple data paths
+                for key in ['trades', 'data', 'congressTrades', 'trading', 'results']:
+                    trade_data = page_props.get(key)
+                    if trade_data:
+                        logger.info(f"Found Quiver data at '{key}': {type(trade_data)}")
+                        if isinstance(trade_data, dict):
+                            trade_data = trade_data.get('data', trade_data.get('trades', []))
+                        if isinstance(trade_data, list) and len(trade_data) > 0:
+                            logger.info(f"Quiver: {len(trade_data)} items, sample: {trade_data[0]}")
+                            for item in trade_data:
+                                trade = self._parse_quiver_trade(item)
+                                if trade:
+                                    trades.append(trade)
+                            if trades:
+                                return trades
+
+            # Try looking for JSON arrays with ticker data embedded anywhere in HTML
+            json_arrays = re.findall(r'\[\s*\{[^[\]]*"[Tt]icker"[^[\]]*\}\s*(?:,\s*\{[^[\]]*\}\s*)*\]', html)
+            if json_arrays:
+                logger.info(f"Found {len(json_arrays)} potential trade arrays in Quiver HTML")
+                for arr_str in json_arrays:
+                    try:
+                        items = json.loads(arr_str)
+                        for item in items:
+                            trade = self._parse_quiver_trade(item)
+                            if trade:
+                                trades.append(trade)
+                    except:
+                        pass
+
+        except Exception as e:
+            logger.info(f"Quiver HTML parse error: {e}")
+
+        return trades
+
+    # ------------------------------------------------------------------
+    # Source 1.5: Unusual Whales (free congressional data)
+    # ------------------------------------------------------------------
+    def _fetch_unusual_whales(self) -> List[CongressTrade]:
+        """
+        Fetch congressional trades from Unusual Whales.
+        They have free public congressional trading data.
+        """
+        trades = []
+
+        urls_to_try = [
+            "https://unusualwhales.com/api/congress",
+            "https://unusualwhales.com/congress",
+        ]
+
+        for url in urls_to_try:
+            try:
+                logger.info(f"Trying Unusual Whales: {url}")
+                resp = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+                logger.info(f"Unusual Whales response: {resp.status_code}")
+
+                if resp.status_code != 200:
+                    continue
+
+                content_type = resp.headers.get('content-type', '')
+
+                if 'json' in content_type:
+                    data = resp.json()
+                    trades = self._parse_unusual_whales_json(data)
+                else:
+                    # HTML page - look for embedded data
+                    trades = self._parse_unusual_whales_html(resp.text)
+
+                if trades:
+                    logger.info(f"Unusual Whales: {len(trades)} trades from {url}")
+                    return trades
+
+            except Exception as e:
+                logger.debug(f"Unusual Whales {url} failed: {e}")
+                continue
+
+        return trades
+
+    def _parse_unusual_whales_json(self, data: Any) -> List[CongressTrade]:
+        """Parse Unusual Whales JSON response."""
+        trades = []
+        try:
+            items = data if isinstance(data, list) else data.get('data', data.get('trades', []))
+            for item in items:
+                ticker = item.get('ticker', item.get('symbol', ''))
+                if not ticker:
+                    continue
+
+                name = item.get('politician', item.get('representative', item.get('name', 'Unknown')))
+                tx_date = item.get('transaction_date', item.get('trade_date', ''))
+                tx_type = item.get('type', item.get('transaction_type', 'Unknown'))
+                amount = item.get('amount', item.get('range', ''))
+                party = item.get('party', 'Unknown')
+                chamber = item.get('chamber', item.get('house', 'House'))
+
+                amount_low, amount_high = self._parse_amount_range(str(amount))
+
+                trades.append(CongressTrade(
+                    politician=name,
+                    party=self._normalize_party(party),
+                    chamber=self._normalize_chamber(chamber),
+                    state=item.get('state', ''),
+                    ticker=ticker.upper(),
+                    asset_description=item.get('asset', ticker),
+                    trade_type=self._normalize_trade_type(tx_type),
+                    trade_date=self._standardize_date(tx_date),
+                    disclosure_date=self._standardize_date(item.get('disclosure_date', tx_date)),
+                    amount_range=str(amount),
+                    amount_low=amount_low,
+                    amount_high=amount_high,
+                    days_to_disclose=0,
+                    owner='Self',
+                ))
+        except Exception as e:
+            logger.debug(f"Unusual Whales JSON parse error: {e}")
+
+        return trades
+
+    def _parse_unusual_whales_html(self, html: str) -> List[CongressTrade]:
+        """Parse Unusual Whales HTML page for trade data."""
+        trades = []
+        try:
+            # Look for __NEXT_DATA__ or embedded JSON
+            import re
+
+            logger.info(f"Unusual Whales HTML length: {len(html)}")
+
+            # Try __NEXT_DATA__
+            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
             if match:
                 next_data = json.loads(match.group(1))
                 page_props = next_data.get('props', {}).get('pageProps', {})
-                trade_data = page_props.get('trades', page_props.get('data', []))
+                logger.info(f"UW pageProps keys: {list(page_props.keys())[:10]}")
 
-                if isinstance(trade_data, list):
-                    for item in trade_data:
-                        trade = self._parse_quiver_trade(item)
-                        if trade:
-                            trades.append(trade)
+                for key in ['trades', 'data', 'congress', 'congressData']:
+                    data = page_props.get(key)
+                    if data:
+                        trades = self._parse_unusual_whales_json(data)
+                        if trades:
+                            return trades
+
+            # Try to find trade data in script tags
+            script_data = re.findall(r'<script[^>]*>([^<]*(?:ticker|symbol)[^<]*)</script>', html, re.I)
+            for script in script_data:
+                try:
+                    data = json.loads(script)
+                    trades = self._parse_unusual_whales_json(data)
+                    if trades:
+                        return trades
+                except:
+                    pass
+
         except Exception as e:
-            logger.debug(f"Quiver HTML parse error: {e}")
+            logger.debug(f"Unusual Whales HTML parse error: {e}")
 
         return trades
 
@@ -613,33 +778,117 @@ class CongressTracker:
         Tries their internal API endpoint used by the frontend.
         """
         trades = []
+
+        # Capitol Trades uses a Next.js app that fetches data from API endpoints
+        # Try multiple potential API endpoints
+        api_urls = [
+            "https://www.capitoltrades.com/api/trades?page=1&pageSize=100",
+            "https://www.capitoltrades.com/api/trades",
+            "https://api.capitoltrades.com/trades",
+            "https://api.capitoltrades.com/v1/trades",
+        ]
+
+        for api_url in api_urls:
+            try:
+                logger.info(f"Trying Capitol Trades API: {api_url}")
+                response = requests.get(api_url, headers=BROWSER_HEADERS, timeout=15)
+                logger.info(f"Capitol API response: {response.status_code}")
+
+                if response.status_code == 200:
+                    content_type = response.headers.get('content-type', '')
+                    if 'json' in content_type:
+                        data = response.json()
+                        trades = self._parse_capitol_trades_json(data)
+                        if trades:
+                            logger.info(f"Capitol API: {len(trades)} trades from {api_url}")
+                            return trades
+            except Exception as e:
+                logger.debug(f"Capitol API {api_url} failed: {e}")
+                continue
+
+        # Fallback: Try the main page and look for embedded data or __NEXT_DATA__
         try:
-            # Capitol Trades uses a Next.js frontend with API routes
-            url = "https://www.capitoltrades.com/trades?page=1&pageSize=96"
-            logger.info("Trying Capitol Trades...")
+            logger.info("Trying Capitol Trades main page...")
+            url = "https://www.capitoltrades.com/trades"
             response = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
-            logger.info(f"Capitol Trades response: {response.status_code}")
+            logger.info(f"Capitol Trades page: {response.status_code}")
 
-            if response.status_code != 200:
-                return trades
+            if response.status_code == 200:
+                text = response.text
 
-            # If we get HTML, try to extract the __NEXT_DATA__ JSON
-            text = response.text
-            if '<!DOCTYPE' in text or '<html' in text:
-                trades = self._parse_capitol_trades_html(text)
-            else:
-                # Direct JSON response
-                try:
-                    data = response.json()
-                    trades = self._parse_capitol_trades_json(data)
-                except json.JSONDecodeError:
-                    pass
+                # Look for JSON data in script tags
+                import re
 
-            if trades:
-                logger.info(f"Capitol Trades: {len(trades)} trades fetched")
+                # Try __NEXT_DATA__
+                next_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', text, re.DOTALL)
+                if next_match:
+                    try:
+                        next_data = json.loads(next_match.group(1))
+                        logger.info(f"Found __NEXT_DATA__, keys: {list(next_data.keys())}")
+                        trades = self._parse_next_data(next_data)
+                        if trades:
+                            return trades
+                    except json.JSONDecodeError:
+                        pass
+
+                # Try to find embedded JSON with trade data
+                json_matches = re.findall(r'\{[^{}]*"ticker"[^{}]*\}', text)
+                if json_matches:
+                    logger.info(f"Found {len(json_matches)} potential trade JSON objects")
+                    for json_str in json_matches[:100]:
+                        try:
+                            item = json.loads(json_str)
+                            trade = self._parse_capitol_trade_item(item)
+                            if trade:
+                                trades.append(trade)
+                        except:
+                            pass
+                    if trades:
+                        return trades
 
         except Exception as e:
-            logger.info(f"Capitol Trades unavailable: {e}")
+            logger.info(f"Capitol Trades page failed: {e}")
+
+        return trades
+
+    def _parse_next_data(self, next_data: Dict) -> List[CongressTrade]:
+        """Parse Next.js __NEXT_DATA__ structure for trade data."""
+        trades = []
+        try:
+            # Navigate common Next.js data paths
+            props = next_data.get('props', {})
+            page_props = props.get('pageProps', {})
+
+            # Log structure for debugging
+            logger.info(f"pageProps keys: {list(page_props.keys())[:10]}")
+
+            # Try common data paths
+            data_paths = [
+                page_props.get('trades'),
+                page_props.get('data'),
+                page_props.get('initialData'),
+                page_props.get('dehydratedState', {}).get('queries', [{}])[0].get('state', {}).get('data'),
+            ]
+
+            for data in data_paths:
+                if data:
+                    if isinstance(data, dict):
+                        items = data.get('data', data.get('trades', data.get('items', [])))
+                    elif isinstance(data, list):
+                        items = data
+                    else:
+                        continue
+
+                    if isinstance(items, list) and len(items) > 0:
+                        logger.info(f"Found {len(items)} items in Next.js data")
+                        for item in items:
+                            trade = self._parse_capitol_trade_item(item)
+                            if trade:
+                                trades.append(trade)
+                        if trades:
+                            return trades
+        except Exception as e:
+            logger.debug(f"_parse_next_data error: {e}")
 
         return trades
 
