@@ -1499,7 +1499,9 @@
                                             <th>Change</th>
                                             <th>Market Cap</th>
                                             <th>Volume</th>
-                                            <th>Signals</th>
+                                            <th>Earnings</th>
+                                            <th>Revenue</th>
+                                            <th>Upside</th>
                                             <th>Momentum</th>
                                             <th>Options Flow</th>
                                         </tr>
@@ -1528,17 +1530,19 @@
                                                     </span>
                                                 </td>
                                                 <td>
-                                                    <div className="signal-badges">
-                                                        {stock.signals?.filter(s => ['earnings', 'revenue', 'volume', 'options'].includes(s)).map(signal => (
-                                                            <span key={signal} className={`signal-badge ${signal}`}>
-                                                                {signal === 'earnings' && '📈'}
-                                                                {signal === 'revenue' && '💰'}
-                                                                {signal === 'volume' && '📊'}
-                                                                {signal === 'options' && '🎯'}
-                                                                {' '}{signal}
-                                                            </span>
-                                                        ))}
-                                                    </div>
+                                                    <span className={stock.earnings_surprise_pct > 0 ? 'positive' : stock.earnings_surprise_pct < 0 ? 'negative' : ''}>
+                                                        {stock.earnings_surprise_pct != null ? `${stock.earnings_surprise_pct > 0 ? '+' : ''}${stock.earnings_surprise_pct.toFixed(1)}%` : '-'}
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <span className={stock.revenue_growth_yoy > 0 ? 'positive' : stock.revenue_growth_yoy < 0 ? 'negative' : ''}>
+                                                        {stock.revenue_growth_yoy != null ? `${stock.revenue_growth_yoy > 0 ? '+' : ''}${stock.revenue_growth_yoy.toFixed(1)}%` : '-'}
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <span className={stock.analyst_upside_pct > 0 ? 'positive' : stock.analyst_upside_pct < 0 ? 'negative' : ''}>
+                                                        {stock.analyst_upside_pct != null ? `${stock.analyst_upside_pct > 0 ? '+' : ''}${stock.analyst_upside_pct.toFixed(1)}%` : '-'}
+                                                    </span>
                                                 </td>
                                                 <td>
                                                     <div className="momentum-score">
@@ -1611,6 +1615,33 @@
                                             <div className="detail-label">Volume vs Avg</div>
                                             <div className="detail-value" style={{ color: selectedStock.volume_spike_pct >= 150 ? 'var(--accent-yellow)' : 'inherit' }}>
                                                 {selectedStock.volume_spike_pct?.toFixed(0)}%
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="detail-grid">
+                                        <div className="detail-item">
+                                            <div className="detail-label">Earnings Surprise</div>
+                                            <div className="detail-value" style={{ color: selectedStock.earnings_surprise_pct > 0 ? 'var(--accent-green)' : selectedStock.earnings_surprise_pct < 0 ? 'var(--accent-red)' : 'inherit' }}>
+                                                {selectedStock.earnings_surprise_pct != null ? `${selectedStock.earnings_surprise_pct > 0 ? '+' : ''}${selectedStock.earnings_surprise_pct}%` : '-'}
+                                            </div>
+                                        </div>
+                                        <div className="detail-item">
+                                            <div className="detail-label">Revenue Growth</div>
+                                            <div className="detail-value" style={{ color: selectedStock.revenue_growth_yoy > 0 ? 'var(--accent-green)' : selectedStock.revenue_growth_yoy < 0 ? 'var(--accent-red)' : 'inherit' }}>
+                                                {selectedStock.revenue_growth_yoy != null ? `${selectedStock.revenue_growth_yoy > 0 ? '+' : ''}${selectedStock.revenue_growth_yoy}% YoY` : '-'}
+                                            </div>
+                                        </div>
+                                        <div className="detail-item">
+                                            <div className="detail-label">Target Price</div>
+                                            <div className="detail-value">
+                                                {selectedStock.target_price != null ? `$${selectedStock.target_price.toFixed(2)}` : '-'}
+                                            </div>
+                                        </div>
+                                        <div className="detail-item">
+                                            <div className="detail-label">Analyst Upside</div>
+                                            <div className="detail-value" style={{ color: selectedStock.analyst_upside_pct > 0 ? 'var(--accent-green)' : selectedStock.analyst_upside_pct < 0 ? 'var(--accent-red)' : 'inherit' }}>
+                                                {selectedStock.analyst_upside_pct != null ? `${selectedStock.analyst_upside_pct > 0 ? '+' : ''}${selectedStock.analyst_upside_pct}%` : '-'}
                                             </div>
                                         </div>
                                     </div>

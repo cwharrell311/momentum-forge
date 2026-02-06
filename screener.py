@@ -48,6 +48,8 @@ class StockSignal:
     # Sentiment
     analyst_rating: Optional[str]
     analyst_count: int
+    target_price: Optional[float]
+    analyst_upside_pct: Optional[float]
 
     # Computed
     signals: List[str] = field(default_factory=list)
@@ -578,6 +580,8 @@ class MomentumScreener:
             options_flow_description=data.get('options_flow_description', 'Unknown'),
             analyst_rating=data.get('analyst_rating'),
             analyst_count=data.get('analyst_count', 0),
+            target_price=data.get('target_price'),
+            analyst_upside_pct=round((data['target_price'] / data['price'] - 1) * 100, 1) if data.get('target_price') and data.get('price') else None,
             signals=data['signals'],
             momentum_score=data['momentum_score']
         )
