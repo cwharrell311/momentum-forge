@@ -692,8 +692,13 @@ class CongressTracker:
                 logger.info(f"Capitol Trades sample HTML structure: {str(sample_divs[0])[:300]}")
                 self._logged_capitol_sample = True
 
+            # Log raw HTML sample IMMEDIATELY for debugging
+            html_sample = html[:1000] if len(html) > 1000 else html
+            logger.info(f"Capitol Trades raw HTML sample: {html_sample[:500]}")
+
             # Look for trade rows - Capitol Trades uses various table/list structures
             rows = soup.find_all('tr') or soup.find_all('div', class_=re.compile(r'trade|row', re.I))
+            logger.info(f"Capitol Trades found {len(rows)} rows to parse")
 
             for row in rows[:100]:  # Limit
                 cells = row.find_all(['td', 'span', 'div'])
