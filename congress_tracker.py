@@ -686,6 +686,12 @@ class CongressTracker:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, 'html.parser')
 
+            # Log a sample of the HTML structure for debugging
+            sample_divs = soup.find_all('div', limit=5)
+            if sample_divs and not hasattr(self, '_logged_capitol_sample'):
+                logger.info(f"Capitol Trades sample HTML structure: {str(sample_divs[0])[:300]}")
+                self._logged_capitol_sample = True
+
             # Look for trade rows - Capitol Trades uses various table/list structures
             rows = soup.find_all('tr') or soup.find_all('div', class_=re.compile(r'trade|row', re.I))
 
@@ -696,40 +702,81 @@ class CongressTracker:
 
                 ticker = ''
                 name = ''
+                party = 'Unknown'
+                chamber = 'Unknown'
+                state = ''
                 tx_type = ''
                 tx_date = ''
                 amount = ''
 
                 for cell in cells:
                     text = cell.get_text(strip=True)
-                    # Ticker pattern
-                    if re.match(r'^[A-Z]{1,5}$', text) and text not in ('BUY', 'SELL', 'USD'):
-                        ticker = text
-                    # Date pattern
-                    elif re.match(r'\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}', text):
+
+                    # Ticker pattern (1-5 uppercase letters, not common words)
+                    if re.match(r'^[A-Z]{1,5}$', text) and text not in ('BUY', 'SELL', 'USD', 'THE', 'FOR', 'AND'):
+                        if not ticker:  # Only take first ticker found
+                            ticker = text
+
+                    # Date patterns - try multiple formats
+                    # Format: Jan 15, 2026 or January 15, 2026
+                    elif re.match(r'^[A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}$', text):
                         tx_date = text
+                    # Format: 01/15/2026 or 1/15/26
+                    elif re.match(r'^\d{1,2}/\d{1,2}/\d{2,4}$', text):
+                        tx_date = text
+                    # Format: 2026-01-15
+                    elif re.match(r'^\d{4}-\d{2}-\d{2}$', text):
+                        tx_date = text
+
                     # Trade type
-                    elif text.lower() in ('buy', 'sell', 'purchase', 'sale'):
+                    elif text.lower() in ('buy', 'sell', 'purchase', 'sale', 'sold', 'bought'):
                         tx_type = text
-                    # Amount
-                    elif '$' in text:
+
+                    # Amount (contains $)
+                    elif '$' in text and not amount:
                         amount = text
-                    # Name (longer text)
-                    elif len(text) > 5 and not name:
-                        name = text
+
+                    # Party detection
+                    elif text in ('Democrat', 'Republican', 'Independent', 'D', 'R', 'I'):
+                        party = text
+
+                    # Chamber detection
+                    elif text in ('House', 'Senate', 'H', 'S'):
+                        chamber = text
+
+                    # State (2 letter code)
+                    elif re.match(r'^[A-Z]{2}$', text) and text not in ('US', 'NA', 'OK'):
+                        state = text
+
+                    # Name - longer text that looks like a name (not containing common non-name patterns)
+                    elif len(text) > 3 and not name:
+                        # Check if it's a concatenated name like "Kelly MorrisonDemocratHouseMN"
+                        # Try to split it
+                        concat_match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)(Democrat|Republican|Independent)?(House|Senate)?([A-Z]{2})?$', text)
+                        if concat_match:
+                            name = concat_match.group(1).strip()
+                            if concat_match.group(2):
+                                party = concat_match.group(2)
+                            if concat_match.group(3):
+                                chamber = concat_match.group(3)
+                            if concat_match.group(4):
+                                state = concat_match.group(4)
+                        elif not any(skip in text.lower() for skip in ['purchase', 'sale', 'buy', 'sell', '$', 'total']):
+                            name = text
 
                 if ticker:
                     amount_low, amount_high = self._parse_amount_range(amount)
+                    standardized_date = self._standardize_date(tx_date)
                     trades.append(CongressTrade(
                         politician=name or 'Unknown',
-                        party='Unknown',
-                        chamber='Unknown',
-                        state='',
+                        party=self._normalize_party(party),
+                        chamber=self._normalize_chamber(chamber),
+                        state=state,
                         ticker=ticker,
                         asset_description=ticker,
                         trade_type=self._normalize_trade_type(tx_type),
-                        trade_date=self._standardize_date(tx_date),
-                        disclosure_date=self._standardize_date(tx_date),
+                        trade_date=standardized_date,
+                        disclosure_date=standardized_date,
                         amount_range=amount,
                         amount_low=amount_low,
                         amount_high=amount_high,
@@ -1022,6 +1069,44 @@ class CongressTracker:
         # MM/DD/YYYY
         try:
             dt = datetime.strptime(date_str, '%m/%d/%Y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+        # M/D/YYYY (single digit month/day)
+        try:
+            dt = datetime.strptime(date_str, '%m/%d/%Y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+        # MM/DD/YY (2-digit year)
+        try:
+            dt = datetime.strptime(date_str, '%m/%d/%y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+        # Jan 15, 2026 or Jan 15 2026
+        try:
+            # Remove comma if present
+            clean_date = date_str.replace(',', '')
+            dt = datetime.strptime(clean_date, '%b %d %Y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+        # January 15, 2026 or January 15 2026
+        try:
+            clean_date = date_str.replace(',', '')
+            dt = datetime.strptime(clean_date, '%B %d %Y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+        # 15 Jan 2026
+        try:
+            dt = datetime.strptime(date_str, '%d %b %Y')
             return dt.strftime('%Y-%m-%d')
         except ValueError:
             pass
