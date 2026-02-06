@@ -57,8 +57,8 @@ class SECEdgar:
             return
 
         try:
-            # SEC provides a mapping file
-            url = f"{self.BASE_URL}/files/company_tickers.json"
+            # SEC provides a mapping file (note: www.sec.gov, not data.sec.gov)
+            url = "https://www.sec.gov/files/company_tickers.json"
             response = requests.get(url, headers=self.HEADERS, timeout=30)
 
             if response.status_code == 200:
