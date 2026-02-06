@@ -8,6 +8,10 @@ from flask_cors import CORS
 from screener import MomentumScreener
 from congress_tracker import CongressTracker
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 import threading
 import time
 from datetime import datetime
