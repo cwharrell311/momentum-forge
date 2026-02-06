@@ -277,6 +277,28 @@ class MomentumScreener:
             except Exception:
                 pass  # Earnings history not available for all stocks
 
+            # Calculate revenue growth and acceleration from quarterly income statement
+            revenue_growth_yoy = None
+            revenue_accelerating = False
+            try:
+                quarterly_rev = stock.quarterly_income_stmt.loc['Total Revenue']
+                if quarterly_rev is not None and len(quarterly_rev) >= 5:
+                    # Current quarter vs year ago (index 0 vs index 4)
+                    current_rev = quarterly_rev.iloc[0]
+                    year_ago_rev = quarterly_rev.iloc[4]
+                    if year_ago_rev and year_ago_rev > 0:
+                        revenue_growth_yoy = ((current_rev - year_ago_rev) / year_ago_rev) * 100
+
+                    # Previous quarter vs its year ago (index 1 vs index 5) for acceleration
+                    if len(quarterly_rev) >= 6:
+                        prev_rev = quarterly_rev.iloc[1]
+                        prev_year_ago_rev = quarterly_rev.iloc[5]
+                        if prev_year_ago_rev and prev_year_ago_rev > 0:
+                            prev_growth = ((prev_rev - prev_year_ago_rev) / prev_year_ago_rev) * 100
+                            revenue_accelerating = revenue_growth_yoy is not None and revenue_growth_yoy > prev_growth
+            except Exception:
+                pass  # Quarterly data not available for all stocks
+
             return {
                 'ticker': ticker,
                 'name': info.get('shortName', info.get('longName', ticker)),
@@ -300,6 +322,8 @@ class MomentumScreener:
                 'earnings_growth': info.get('earningsGrowth', None),
                 'revenue_growth': info.get('revenueGrowth', None),
                 'earnings_surprise': earnings_surprise,
+                'revenue_growth_yoy_calc': revenue_growth_yoy,
+                'revenue_accelerating_calc': revenue_accelerating,
             }
             
         except Exception as e:
@@ -558,7 +582,6 @@ class MomentumScreener:
         # Use real earnings surprise from earnings_history, fallback to earnings growth
         earnings_surprise = data.get('earnings_surprise')
         earnings_growth = data.get('earnings_growth')
-        rev_growth = data.get('revenue_growth')
 
         # Prefer real earnings surprise, fall back to earnings growth
         if earnings_surprise is not None:
@@ -568,8 +591,17 @@ class MomentumScreener:
         else:
             data['earnings_surprise_pct'] = None
 
-        data['revenue_growth_yoy'] = round(rev_growth * 100, 1) if rev_growth else None
-        data['revenue_accelerating'] = False  # Can't determine from Yahoo data alone
+        # Use calculated revenue growth from quarterly data, fallback to info.revenueGrowth
+        rev_growth_calc = data.get('revenue_growth_yoy_calc')
+        rev_growth_info = data.get('revenue_growth')
+        if rev_growth_calc is not None:
+            data['revenue_growth_yoy'] = round(rev_growth_calc, 1)
+        elif rev_growth_info is not None:
+            data['revenue_growth_yoy'] = round(rev_growth_info * 100, 1)
+        else:
+            data['revenue_growth_yoy'] = None
+
+        data['revenue_accelerating'] = data.get('revenue_accelerating_calc', False)
 
         # Calculate score and signals
         data['momentum_score'] = self.calculate_momentum_score(data)
