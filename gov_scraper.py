@@ -218,50 +218,44 @@ class SenateScraper:
     def _parse_ptr_row(self, row: List) -> Optional[Dict]:
         """Parse a row from the PTR list API response."""
         try:
-            if not isinstance(row, list) or len(row) < 4:
+            if not isinstance(row, list) or len(row) < 5:
                 logger.debug(f"Row too short or not a list: {row}")
                 return None
 
-            # Row format: [name_html, office, report_type_html, date]
-            name_html = str(row[0])
-            report_html = str(row[2])
-            date_str = str(row[3]).strip()
+            # Actual row format from Senate EFD DataTables API:
+            # [0] = First name (plain text: "Shelley M")
+            # [1] = Last name (plain text: "Capito")
+            # [2] = Full name with title (plain text: "Capito, Shelley Moore (Senator)")
+            # [3] = Report type WITH href link (<a href="/search/view/ptr/...">)
+            # [4] = Date (plain text: "02/05/2026")
+            first_name = str(row[0]).strip()
+            last_name = str(row[1]).strip()
+            full_name = str(row[2]).strip()
+            report_html = str(row[3])  # This contains the link!
+            date_str = str(row[4]).strip()
 
             # Log first few rows for debugging
             if not hasattr(self, '_log_count'):
                 self._log_count = 0
             if self._log_count < 3:
-                logger.info(f"PTR row {self._log_count}: name_html={name_html[:300]}")
-                logger.info(f"PTR row {self._log_count}: report_html={report_html[:300]}")
+                logger.info(f"PTR row {self._log_count}: first_name={first_name}, last_name={last_name}")
+                logger.info(f"PTR row {self._log_count}: report_html={report_html[:200]}")
                 logger.info(f"PTR row {self._log_count}: all columns={[str(c)[:100] for c in row]}")
                 self._log_count += 1
 
-            # Extract name from HTML - try multiple patterns
+            # Build name - prefer full_name, fall back to first + last
             name = ''
-            # Pattern 1: Text between > and <
-            name_match = re.search(r'>([^<]+)<', name_html)
-            if name_match:
-                name = name_match.group(1).strip()
-            # Pattern 2: Just get any text content
+            # Clean up full_name (remove "(Senator)" suffix)
+            if full_name:
+                name = re.sub(r'\s*\(Senator\)\s*$', '', full_name).strip()
             if not name:
-                name = re.sub(r'<[^>]+>', '', name_html).strip()
+                name = f"{first_name} {last_name}".strip()
 
-            # Extract report link from HTML - try multiple patterns
+            # Extract report link from report_html (column 3)
             link = ''
-            # Pattern 1: href in report cell
             link_match = re.search(r'href=["\']([^"\']+)', report_html)
             if link_match:
                 link = link_match.group(1).strip()
-            # Pattern 2: href in name cell
-            if not link:
-                link_match = re.search(r'href=["\']([^"\']+)', name_html)
-                if link_match:
-                    link = link_match.group(1).strip()
-            # Pattern 3: Look for /search/view/paper/ or /search/view/ptr/ paths
-            if not link:
-                link_match = re.search(r'(/search/view/(?:paper|ptr)/[^"\'>\s]+)', name_html + report_html)
-                if link_match:
-                    link = link_match.group(1)
 
             if link and not link.startswith('http'):
                 link = f"https://efdsearch.senate.gov{link}"
@@ -270,17 +264,20 @@ class SenateScraper:
             if self._log_count <= 3:
                 logger.info(f"PTR extracted: name='{name[:50] if name else 'NONE'}', link='{link[:80] if link else 'NONE'}'")
 
-            # Be more lenient - accept if we have either name or link
-            if name or link:
+            # Accept if we have name and link
+            if name and link:
                 return {
-                    'name': name or 'Unknown Senator',
+                    'name': name,
                     'link': link,
                     'date': date_str,
                     'type': 'PTR',
                     'chamber': 'Senate',
                 }
+            elif name:
+                # Still return entry with name even without link
+                logger.debug(f"No link found for {name}, skipping")
             else:
-                logger.debug(f"Could not extract name or link from row")
+                logger.debug(f"Could not extract name from row")
         except Exception as e:
             logger.debug(f"Error parsing PTR row: {e}")
 
