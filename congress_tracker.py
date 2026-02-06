@@ -764,11 +764,27 @@ class CongressTracker:
                         elif not any(skip in text.lower() for skip in ['purchase', 'sale', 'buy', 'sell', '$', 'total']):
                             name = text
 
-                # Log first few rows to debug date extraction
+                # If no date found yet, search the entire row text for date patterns
+                if ticker and not tx_date:
+                    row_text = row.get_text()
+                    # Try various date patterns in the full row text
+                    date_patterns = [
+                        r'(\d{1,2}/\d{1,2}/\d{2,4})',  # 01/15/2026
+                        r'(\d{4}-\d{2}-\d{2})',  # 2026-01-15
+                        r'([A-Z][a-z]{2}\s+\d{1,2},?\s+\d{4})',  # Jan 15, 2026
+                        r'([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})',  # January 15, 2026
+                    ]
+                    for pattern in date_patterns:
+                        date_match = re.search(pattern, row_text)
+                        if date_match:
+                            tx_date = date_match.group(1)
+                            break
+
+                # Log first few rows to debug
                 if ticker and len(trades) < 3:
-                    cell_texts = [c.get_text(strip=True)[:40] for c in cells[:12]]
-                    logger.info(f"Capitol row cells: {cell_texts}")
-                    logger.info(f"  Extracted: ticker={ticker}, date='{tx_date}', name={name[:30]}")
+                    row_text_sample = row.get_text()[:200].replace('\n', ' ')
+                    logger.info(f"Capitol row text: {row_text_sample}")
+                    logger.info(f"  Extracted: ticker={ticker}, date='{tx_date}', name={name[:30] if name else 'none'}")
 
                 if ticker:
                     amount_low, amount_high = self._parse_amount_range(amount)
