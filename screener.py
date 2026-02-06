@@ -265,6 +265,18 @@ class MomentumScreener:
             # Price change
             change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
             
+            # Get earnings surprise from earnings history
+            earnings_surprise = None
+            try:
+                earnings_hist = stock.earnings_history
+                if earnings_hist is not None and not earnings_hist.empty:
+                    # Get most recent quarter's surprise percentage
+                    latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
+                    if latest_surprise is not None:
+                        earnings_surprise = latest_surprise * 100  # Convert to percentage
+            except Exception:
+                pass  # Earnings history not available for all stocks
+
             return {
                 'ticker': ticker,
                 'name': info.get('shortName', info.get('longName', ticker)),
@@ -287,6 +299,7 @@ class MomentumScreener:
                 'forward_eps': info.get('forwardEps', None),
                 'earnings_growth': info.get('earningsGrowth', None),
                 'revenue_growth': info.get('revenueGrowth', None),
+                'earnings_surprise': earnings_surprise,
             }
             
         except Exception as e:
@@ -542,12 +555,19 @@ class MomentumScreener:
         data.update(options_data)
         
         # Get earnings/revenue data from Yahoo Finance
-        # Note: FMP free tier no longer works (deprecated Aug 2025)
+        # Use real earnings surprise from earnings_history, fallback to earnings growth
+        earnings_surprise = data.get('earnings_surprise')
         earnings_growth = data.get('earnings_growth')
         rev_growth = data.get('revenue_growth')
 
-        # Use earnings growth as proxy for earnings surprise (positive = beating expectations)
-        data['earnings_surprise_pct'] = round(earnings_growth * 100, 1) if earnings_growth else None
+        # Prefer real earnings surprise, fall back to earnings growth
+        if earnings_surprise is not None:
+            data['earnings_surprise_pct'] = round(earnings_surprise, 1)
+        elif earnings_growth is not None:
+            data['earnings_surprise_pct'] = round(earnings_growth * 100, 1)
+        else:
+            data['earnings_surprise_pct'] = None
+
         data['revenue_growth_yoy'] = round(rev_growth * 100, 1) if rev_growth else None
         data['revenue_accelerating'] = False  # Can't determine from Yahoo data alone
 
