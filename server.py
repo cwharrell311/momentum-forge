@@ -20,9 +20,10 @@ app = Flask(__name__)
 CORS(app)
 
 # Global state
-fmp_key = os.environ.get('FMP_API_KEY')
-screener = MomentumScreener(fmp_api_key=fmp_key)
-congress_tracker = CongressTracker(fmp_api_key=fmp_key)
+alpaca_key = os.environ.get('ALPACA_API_KEY')
+alpaca_secret = os.environ.get('ALPACA_SECRET_KEY')
+screener = MomentumScreener(alpaca_key=alpaca_key, alpaca_secret=alpaca_secret)
+congress_tracker = CongressTracker()
 congress_trades = []
 congress_loading = False
 scan_results = []

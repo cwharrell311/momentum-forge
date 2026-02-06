@@ -1,6 +1,11 @@
 """
 MomentumForge Stock Screener Backend
-Scans NASDAQ/NYSE for momentum signals using free data sources.
+Scans NASDAQ/NYSE for momentum signals.
+
+Data Sources:
+- Alpaca: Real-time prices, historical data, options (primary)
+- SEC EDGAR: Revenue, EPS actuals (fundamentals)
+- Yahoo Finance: Analyst estimates, earnings surprise (analyst data only)
 """
 
 import yfinance as yf
@@ -16,6 +21,7 @@ from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Dict, Any, Callable
 import logging
 from sec_edgar import SECEdgar
+from alpaca_client import AlpacaClient
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -70,23 +76,28 @@ class StockSignal:
 class MomentumScreener:
     """
     Screens stocks for momentum signals using:
-    - Yahoo Finance for price, volume, technicals, options
-    - Financial Modeling Prep for earnings/revenue (free tier)
+    - Alpaca: Real-time prices, historical data, options (primary)
+    - SEC EDGAR: Revenue, EPS actuals (fundamentals)
+    - Yahoo Finance: Analyst estimates, earnings surprise (fallback + analyst data)
     """
-    
-    FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
-    
-    def __init__(self, fmp_api_key: Optional[str] = None):
+
+    def __init__(self, alpaca_key: Optional[str] = None, alpaca_secret: Optional[str] = None):
         """
         Initialize screener.
 
         Args:
-            fmp_api_key: Financial Modeling Prep API key (optional, deprecated)
+            alpaca_key: Alpaca API key (or set ALPACA_API_KEY env var)
+            alpaca_secret: Alpaca secret key (or set ALPACA_SECRET_KEY env var)
         """
-        self.fmp_api_key = fmp_api_key
         self._ticker_cache = {}
         self._universe_cache = None
-        self.sec_edgar = SECEdgar()  # Direct SEC EDGAR access for fundamentals
+        self.sec_edgar = SECEdgar()
+        self.alpaca = AlpacaClient(api_key=alpaca_key, secret_key=alpaca_secret)
+
+        if self.alpaca.is_configured():
+            logger.info("Alpaca API configured - using real-time data")
+        else:
+            logger.info("Alpaca not configured - falling back to Yahoo Finance")
     
     def get_universe(self, min_market_cap_b: float = 2.0) -> List[str]:
         """
@@ -218,51 +229,133 @@ class MomentumScreener:
     
     def get_stock_data(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
-        Fetch comprehensive stock data from Yahoo Finance.
+        Fetch stock data using Alpaca (primary) or Yahoo (fallback).
+
+        Data sources:
+        - Alpaca: Price, volume, technicals (if configured)
+        - Yahoo: Analyst data, earnings surprise, fallback for price
+        - SEC EDGAR: Revenue, EPS (handled in analyze_stock)
         """
+        # Try Alpaca first for price/technicals (fast, no rate limits)
+        if self.alpaca.is_configured():
+            return self._get_stock_data_alpaca(ticker)
+        else:
+            return self._get_stock_data_yahoo(ticker)
+
+    def _get_stock_data_alpaca(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get stock data from Alpaca (price/technicals) + Yahoo (analyst data only)."""
+        try:
+            # Get technicals from Alpaca (one call for all price data)
+            technicals = self.alpaca.calculate_technicals(ticker)
+            if not technicals:
+                logger.debug(f"Alpaca has no data for {ticker}, trying Yahoo")
+                return self._get_stock_data_yahoo(ticker)
+
+            # Get snapshot for current price/change
+            snapshot = self.alpaca.get_snapshot(ticker)
+
+            current_price = snapshot['price'] if snapshot else technicals['current_price']
+            change_pct = snapshot['change_percent'] if snapshot else 0
+
+            # Get analyst data from Yahoo (minimal call - just info)
+            analyst_data = self._get_yahoo_analyst_data(ticker)
+
+            return {
+                'ticker': ticker,
+                'name': analyst_data.get('name', ticker),
+                'sector': analyst_data.get('sector', 'Unknown'),
+                'price': current_price,
+                'change_percent': change_pct or 0,
+                'market_cap_b': analyst_data.get('market_cap_b', 0),
+                'above_ma20': technicals['above_ma20'],
+                'above_ma50': technicals['above_ma50'],
+                'above_ma200': technicals['above_ma200'],
+                'volume_spike_pct': technicals['volume_spike_pct'],
+                'avg_volume': technicals['avg_volume'],
+                'current_volume': technicals['current_volume'],
+                # Analyst data from Yahoo
+                'analyst_rating': analyst_data.get('analyst_rating'),
+                'analyst_count': analyst_data.get('analyst_count', 0),
+                'target_price': analyst_data.get('target_price'),
+                'earnings_surprise': analyst_data.get('earnings_surprise'),
+                'data_source': 'Alpaca',
+            }
+
+        except Exception as e:
+            logger.warning(f"Alpaca error for {ticker}: {e}, trying Yahoo")
+            return self._get_stock_data_yahoo(ticker)
+
+    def _get_yahoo_analyst_data(self, ticker: str) -> Dict[str, Any]:
+        """Get only analyst data from Yahoo (minimal API call)."""
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-            
-            # Basic validation
-            market_cap = info.get('marketCap', 0)
-            if not market_cap or market_cap < 2e9:  # < $2B
-                return None
-            
-            # Get historical data for technicals
-            hist = stock.history(period='1y')
-            if hist.empty or len(hist) < 200:
-                return None
-            
-            current_price = hist['Close'].iloc[-1]
-            prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
-            
-            # Calculate moving averages
-            ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-            ma50 = hist['Close'].rolling(window=50).mean().iloc[-1]
-            ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-            
-            # Volume analysis
-            avg_volume_20d = hist['Volume'].rolling(window=20).mean().iloc[-1]
-            current_volume = hist['Volume'].iloc[-1]
-            volume_spike_pct = (current_volume / avg_volume_20d * 100) if avg_volume_20d > 0 else 100
-            
-            # Price change
-            change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
-            
-            # Get earnings surprise from Yahoo (only Yahoo has analyst estimates)
+
+            # Get earnings surprise
             earnings_surprise = None
             try:
                 earnings_hist = stock.earnings_history
                 if earnings_hist is not None and not earnings_hist.empty:
-                    # Get most recent quarter's surprise percentage
                     latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
                     if latest_surprise is not None:
-                        earnings_surprise = latest_surprise * 100  # Convert to percentage
+                        earnings_surprise = latest_surprise * 100
             except Exception:
-                pass  # Earnings history not available for all stocks
+                pass
 
-            # Note: Revenue and EPS come from SEC EDGAR now (see analyze_stock)
+            return {
+                'name': info.get('shortName', info.get('longName', ticker)),
+                'sector': info.get('sector', 'Unknown'),
+                'market_cap_b': info.get('marketCap', 0) / 1e9,
+                'analyst_rating': info.get('recommendationKey'),
+                'analyst_count': info.get('numberOfAnalystOpinions', 0),
+                'target_price': info.get('targetMeanPrice'),
+                'earnings_surprise': earnings_surprise,
+            }
+        except Exception as e:
+            logger.debug(f"Yahoo analyst data error for {ticker}: {e}")
+            return {}
+
+    def _get_stock_data_yahoo(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Fallback: Get all stock data from Yahoo Finance."""
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            # Basic validation
+            market_cap = info.get('marketCap', 0)
+            if not market_cap or market_cap < 2e9:
+                return None
+
+            # Get historical data for technicals
+            hist = stock.history(period='1y')
+            if hist.empty or len(hist) < 200:
+                return None
+
+            current_price = hist['Close'].iloc[-1]
+            prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
+
+            # Calculate moving averages
+            ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+            ma50 = hist['Close'].rolling(window=50).mean().iloc[-1]
+            ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
+
+            # Volume analysis
+            avg_volume_20d = hist['Volume'].rolling(window=20).mean().iloc[-1]
+            current_volume = hist['Volume'].iloc[-1]
+            volume_spike_pct = (current_volume / avg_volume_20d * 100) if avg_volume_20d > 0 else 100
+
+            change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+
+            # Get earnings surprise
+            earnings_surprise = None
+            try:
+                earnings_hist = stock.earnings_history
+                if earnings_hist is not None and not earnings_hist.empty:
+                    latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
+                    if latest_surprise is not None:
+                        earnings_surprise = latest_surprise * 100
+            except Exception:
+                pass
 
             return {
                 'ticker': ticker,
@@ -277,13 +370,11 @@ class MomentumScreener:
                 'volume_spike_pct': volume_spike_pct,
                 'avg_volume': avg_volume_20d,
                 'current_volume': current_volume,
-                # Analyst data from Yahoo (only Yahoo has this)
-                'analyst_rating': info.get('recommendationKey', None),
+                'analyst_rating': info.get('recommendationKey'),
                 'analyst_count': info.get('numberOfAnalystOpinions', 0),
-                'target_price': info.get('targetMeanPrice', None),
-                # Earnings surprise from Yahoo (requires analyst estimates)
+                'target_price': info.get('targetMeanPrice'),
                 'earnings_surprise': earnings_surprise,
-                # Note: Revenue/EPS actuals come from SEC EDGAR
+                'data_source': 'Yahoo Finance',
             }
             
         except Exception as e:
