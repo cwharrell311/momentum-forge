@@ -324,7 +324,7 @@ class CongressTracker:
 
         # Source 6: FMP API (paid)
         if not trades and self.fmp_api_key:
-            logger.info(">>> Trying Source 5: FMP API...")
+            logger.info(">>> Trying Source 6: FMP API...")
             try:
                 trades = self._fetch_fmp_trades(days_back)
                 if trades:
