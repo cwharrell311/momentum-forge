@@ -90,8 +90,8 @@ class MomentumScreener:
     
     def get_universe(self, min_market_cap_b: float = 2.0) -> List[str]:
         """
-        Get full list of US-traded stocks from NYSE and NASDAQ.
-        Fetches from FMP's stock list endpoint, with Wikipedia fallback.
+        Get full list of US-traded stocks.
+        Uses SEC ticker list (10,000+ stocks), with Wikipedia/fallback as backup.
         """
         # Return cached universe if available
         if self._universe_cache:
@@ -99,40 +99,25 @@ class MomentumScreener:
 
         universe = []
 
-        # Method 1: Try FMP's full stock list (available on free tier)
-        if self.fmp_api_key:
-            try:
-                stock_list_url = f"{self.FMP_BASE_URL}/stock/list?apikey={self.fmp_api_key}"
-                response = requests.get(stock_list_url, timeout=60)
-                logger.info(f"FMP stock list API response status: {response.status_code}")
+        # Method 1: Try Wikipedia for S&P indices (covers large/mid/small caps ~1500 stocks)
+        # This is the sweet spot - enough coverage without overwhelming Yahoo Finance
+        logger.info("Fetching S&P 500/400/600 from Wikipedia...")
+        universe = self._fetch_wikipedia_stocks()
 
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list):
-                        for stock in data:
-                            symbol = stock.get('symbol', '')
-                            exchange = stock.get('exchangeShortName', '')
-                            stock_type = stock.get('type', '')
-
-                            # Filter: US exchanges, stocks only, no special symbols
-                            if (exchange in ['NYSE', 'NASDAQ', 'AMEX'] and
-                                stock_type == 'stock' and
-                                symbol and
-                                '.' not in symbol and  # No class shares like BRK.A
-                                '-' not in symbol and  # No warrants like SPAC-WT
-                                '^' not in symbol and  # No indices
-                                len(symbol) <= 5):     # Normal ticker length
-                                universe.append(symbol)
-
-                        logger.info(f"Fetched {len(universe)} US stocks from FMP stock list")
-
-            except Exception as e:
-                logger.error(f"Error fetching stock list from FMP: {e}")
-
-        # Method 2: Try Wikipedia for S&P indices (covers large/mid/small caps)
-        if not universe:
-            logger.info("Trying Wikipedia for stock universe...")
-            universe = self._fetch_wikipedia_stocks()
+        # Method 2: If Wikipedia fails, use SEC EDGAR ticker list (but limit to avoid rate limits)
+        if not universe and self.sec_edgar._ticker_to_cik:
+            # Get all tickers from SEC, filter for valid format
+            all_sec_tickers = []
+            for ticker in self.sec_edgar._ticker_to_cik.keys():
+                if (ticker and
+                    len(ticker) <= 5 and
+                    ticker.isalpha() and  # Letters only, no special chars
+                    '.' not in ticker and
+                    '-' not in ticker):
+                    all_sec_tickers.append(ticker)
+            # Limit to 1500 to avoid Yahoo rate limits
+            universe = sorted(all_sec_tickers)[:1500]
+            logger.info(f"Using {len(universe)} tickers from SEC EDGAR (limited from {len(all_sec_tickers)})")
 
         # Method 3: Fallback to curated list
         if not universe:
