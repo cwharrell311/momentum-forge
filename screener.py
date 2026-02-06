@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Dict, Any, Callable
 import logging
+from sec_edgar import SECEdgar
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -80,11 +81,12 @@ class MomentumScreener:
         Initialize screener.
 
         Args:
-            fmp_api_key: Financial Modeling Prep API key (required for stock universe and fundamentals)
+            fmp_api_key: Financial Modeling Prep API key (optional, deprecated)
         """
         self.fmp_api_key = fmp_api_key
         self._ticker_cache = {}
         self._universe_cache = None
+        self.sec_edgar = SECEdgar()  # Direct SEC EDGAR access for fundamentals
     
     def get_universe(self, min_market_cap_b: float = 2.0) -> List[str]:
         """
@@ -581,8 +583,7 @@ class MomentumScreener:
         options_data = self.get_options_data(ticker)
         data.update(options_data)
         
-        # Get earnings/revenue data from Yahoo Finance
-        # Use real earnings surprise from earnings_history, fallback to earnings growth
+        # Get earnings surprise from Yahoo Finance (they have analyst estimates)
         earnings_surprise = data.get('earnings_surprise')
         earnings_growth = data.get('earnings_growth')
 
@@ -594,17 +595,32 @@ class MomentumScreener:
         else:
             data['earnings_surprise_pct'] = None
 
-        # Use calculated revenue growth from quarterly data, fallback to info.revenueGrowth
-        rev_growth_calc = data.get('revenue_growth_yoy_calc')
-        rev_growth_info = data.get('revenue_growth')
-        if rev_growth_calc is not None:
-            data['revenue_growth_yoy'] = round(rev_growth_calc, 1)
-        elif rev_growth_info is not None:
-            data['revenue_growth_yoy'] = round(rev_growth_info * 100, 1)
-        else:
-            data['revenue_growth_yoy'] = None
-
-        data['revenue_accelerating'] = data.get('revenue_accelerating_calc', False)
+        # Get revenue data from SEC EDGAR (official 10-Q filings)
+        try:
+            sec_data = self.sec_edgar.get_financials_summary(ticker)
+            if sec_data.get('revenue_growth_yoy') is not None:
+                data['revenue_growth_yoy'] = sec_data['revenue_growth_yoy']
+                data['revenue_accelerating'] = sec_data.get('revenue_accelerating', False)
+                data['data_source'] = 'SEC EDGAR'
+            else:
+                # Fallback to Yahoo Finance data
+                rev_growth_calc = data.get('revenue_growth_yoy_calc')
+                rev_growth_info = data.get('revenue_growth')
+                if rev_growth_calc is not None:
+                    data['revenue_growth_yoy'] = round(rev_growth_calc, 1)
+                elif rev_growth_info is not None:
+                    data['revenue_growth_yoy'] = round(rev_growth_info * 100, 1)
+                else:
+                    data['revenue_growth_yoy'] = None
+                data['revenue_accelerating'] = data.get('revenue_accelerating_calc', False)
+                data['data_source'] = 'Yahoo Finance'
+        except Exception as e:
+            logger.debug(f"SEC EDGAR fallback for {ticker}: {e}")
+            # Fallback to Yahoo Finance
+            rev_growth_info = data.get('revenue_growth')
+            data['revenue_growth_yoy'] = round(rev_growth_info * 100, 1) if rev_growth_info else None
+            data['revenue_accelerating'] = False
+            data['data_source'] = 'Yahoo Finance'
 
         # Calculate score and signals
         data['momentum_score'] = self.calculate_momentum_score(data)
