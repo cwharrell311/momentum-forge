@@ -227,11 +227,14 @@ class SenateScraper:
             report_html = str(row[2])
             date_str = str(row[3]).strip()
 
-            # Log first row for debugging
-            if not hasattr(self, '_logged_sample'):
-                logger.info(f"Sample PTR row[0] (name): {name_html[:200]}")
-                logger.info(f"Sample PTR row[2] (report): {report_html[:200]}")
-                self._logged_sample = True
+            # Log first few rows for debugging
+            if not hasattr(self, '_log_count'):
+                self._log_count = 0
+            if self._log_count < 3:
+                logger.info(f"PTR row {self._log_count}: name_html={name_html[:300]}")
+                logger.info(f"PTR row {self._log_count}: report_html={report_html[:300]}")
+                logger.info(f"PTR row {self._log_count}: all columns={[str(c)[:100] for c in row]}")
+                self._log_count += 1
 
             # Extract name from HTML - try multiple patterns
             name = ''
@@ -262,6 +265,10 @@ class SenateScraper:
 
             if link and not link.startswith('http'):
                 link = f"https://efdsearch.senate.gov{link}"
+
+            # Log link extraction status
+            if self._log_count <= 3:
+                logger.info(f"PTR extracted: name='{name[:50] if name else 'NONE'}', link='{link[:80] if link else 'NONE'}'")
 
             # Be more lenient - accept if we have either name or link
             if name or link:

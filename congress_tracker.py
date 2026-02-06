@@ -163,8 +163,17 @@ class CongressTracker:
     FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
     # S3 buckets that may still have current data
-    SENATE_S3_URL = "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json"
-    HOUSE_S3_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
+    # Multiple URLs to try for Stock Watcher data
+    SENATE_URLS = [
+        "https://senatestockwatcher.com/api/senator_filings",
+        "https://senatestockwatcher.com/api/transactions",
+        "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json",
+    ]
+    HOUSE_URLS = [
+        "https://housestockwatcher.com/api/transactions",
+        "https://housestockwatcher.com/api/filings",
+        "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json",
+    ]
 
     def __init__(self, fmp_api_key: Optional[str] = None, finnhub_api_key: Optional[str] = None):
         self.fmp_api_key = fmp_api_key
@@ -301,7 +310,19 @@ class CongressTracker:
                 self._source_errors.append(f"S3 buckets: {e}")
                 logger.error(f"✗ S3 buckets failed: {e}")
 
-        # Source 5: FMP API (paid)
+        # Source 5: GitHub data repos (community maintained)
+        if not trades:
+            logger.info(">>> Trying Source 5: GitHub data repos...")
+            try:
+                trades = self._fetch_github_data()
+                if trades:
+                    self._source_used = "GitHub Congressional Data"
+                    logger.info(f"✓ GitHub: {len(trades)} trades")
+            except Exception as e:
+                self._source_errors.append(f"GitHub: {e}")
+                logger.error(f"✗ GitHub failed: {e}")
+
+        # Source 6: FMP API (paid)
         if not trades and self.fmp_api_key:
             logger.info(">>> Trying Source 5: FMP API...")
             try:
@@ -1159,46 +1180,62 @@ class CongressTracker:
     # ------------------------------------------------------------------
     def _fetch_stock_watcher_s3(self) -> List[CongressTrade]:
         """
-        Fetch from S3 buckets that may still have current data.
+        Fetch from Stock Watcher websites and S3 buckets.
         These are updated by senatestockwatcher.com / housestockwatcher.com.
         """
         trades = []
 
-        # Senate S3 bucket
-        try:
-            logger.info(f"Fetching Senate S3 bucket...")
-            resp = requests.get(self.SENATE_S3_URL, headers=BROWSER_HEADERS, timeout=60)
-            logger.info(f"Senate S3 response: {resp.status_code}")
+        # Try Senate URLs
+        senate_trades = []
+        for url in self.SENATE_URLS:
+            try:
+                logger.info(f"Trying Senate URL: {url}")
+                resp = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+                logger.info(f"Senate response: {resp.status_code}")
 
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data:
-                    trade = self._parse_stock_watcher_trade(item, 'Senate')
-                    if trade:
-                        trades.append(trade)
-                logger.info(f"Senate S3: {len(trades)} trades parsed")
+                if resp.status_code == 200:
+                    content_type = resp.headers.get('content-type', '')
+                    if 'json' in content_type or url.endswith('.json'):
+                        data = resp.json()
+                        items = data if isinstance(data, list) else data.get('data', data.get('transactions', []))
+                        for item in items:
+                            trade = self._parse_stock_watcher_trade(item, 'Senate')
+                            if trade:
+                                senate_trades.append(trade)
+                        if senate_trades:
+                            logger.info(f"Senate: {len(senate_trades)} trades from {url}")
+                            break
+            except Exception as e:
+                logger.debug(f"Senate URL {url} failed: {e}")
+                continue
 
-        except Exception as e:
-            logger.warning(f"Senate S3 failed: {e}")
+        trades.extend(senate_trades)
 
-        # House S3 bucket
-        house_count = 0
-        try:
-            logger.info(f"Fetching House S3 bucket...")
-            resp = requests.get(self.HOUSE_S3_URL, headers=BROWSER_HEADERS, timeout=60)
-            logger.info(f"House S3 response: {resp.status_code}")
+        # Try House URLs
+        house_trades = []
+        for url in self.HOUSE_URLS:
+            try:
+                logger.info(f"Trying House URL: {url}")
+                resp = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+                logger.info(f"House response: {resp.status_code}")
 
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data:
-                    trade = self._parse_stock_watcher_trade(item, 'House')
-                    if trade:
-                        trades.append(trade)
-                        house_count += 1
-                logger.info(f"House S3: {house_count} trades parsed")
+                if resp.status_code == 200:
+                    content_type = resp.headers.get('content-type', '')
+                    if 'json' in content_type or url.endswith('.json'):
+                        data = resp.json()
+                        items = data if isinstance(data, list) else data.get('data', data.get('transactions', []))
+                        for item in items:
+                            trade = self._parse_stock_watcher_trade(item, 'House')
+                            if trade:
+                                house_trades.append(trade)
+                        if house_trades:
+                            logger.info(f"House: {len(house_trades)} trades from {url}")
+                            break
+            except Exception as e:
+                logger.debug(f"House URL {url} failed: {e}")
+                continue
 
-        except Exception as e:
-            logger.warning(f"House S3 failed: {e}")
+        trades.extend(house_trades)
 
         return trades
 
@@ -1252,7 +1289,107 @@ class CongressTracker:
             return None
 
     # ------------------------------------------------------------------
-    # Source 5: FMP API (paid)
+    # Source 5: GitHub data repos (community maintained)
+    # ------------------------------------------------------------------
+    def _fetch_github_data(self) -> List[CongressTrade]:
+        """
+        Fetch from GitHub repos that maintain congressional trading data.
+        Multiple community repos maintain this data.
+        """
+        trades = []
+
+        github_urls = [
+            # Congress Stock Bot data
+            "https://raw.githubusercontent.com/congressstockbot/congress-stock-data/main/data/transactions.json",
+            # Alternative repos
+            "https://raw.githubusercontent.com/jeremyrice/congressional-stock-trades/main/data/trades.json",
+        ]
+
+        for url in github_urls:
+            try:
+                logger.info(f"Trying GitHub: {url}")
+                resp = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+                logger.info(f"GitHub response: {resp.status_code}")
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data if isinstance(data, list) else data.get('data', data.get('trades', []))
+
+                    for item in items:
+                        trade = self._parse_github_trade(item)
+                        if trade:
+                            trades.append(trade)
+
+                    if trades:
+                        # Check data freshness
+                        newest_date = max((t.trade_date for t in trades if t.trade_date), default='')
+                        if newest_date:
+                            try:
+                                newest_dt = datetime.strptime(newest_date, '%Y-%m-%d')
+                                days_old = (datetime.now() - newest_dt).days
+                                if days_old > 180:
+                                    logger.warning(f"GitHub data is {days_old} days old, continuing to look")
+                                    trades = []
+                                    continue
+                            except ValueError:
+                                pass
+                        logger.info(f"GitHub: {len(trades)} trades from {url}")
+                        return trades
+
+            except Exception as e:
+                logger.debug(f"GitHub URL {url} failed: {e}")
+                continue
+
+        return trades
+
+    def _parse_github_trade(self, item: Dict) -> Optional[CongressTrade]:
+        """Parse a trade from GitHub data repos."""
+        try:
+            ticker = item.get('ticker', item.get('symbol', item.get('Ticker', ''))).strip()
+            if not ticker or ticker in ('--', 'N/A', ''):
+                return None
+
+            # Try multiple field names
+            name = (item.get('politician', '') or item.get('representative', '') or
+                   item.get('senator', '') or item.get('name', '') or
+                   item.get('Representative', '') or 'Unknown').strip()
+
+            tx_date = (item.get('transaction_date', '') or item.get('trade_date', '') or
+                      item.get('TransactionDate', '')).strip()
+            disclosure_date = (item.get('disclosure_date', '') or item.get('report_date', '') or
+                             item.get('ReportDate', '') or tx_date).strip()
+
+            tx_type = (item.get('type', '') or item.get('transaction_type', '') or
+                      item.get('Transaction', '') or 'Unknown').strip()
+
+            amount = str(item.get('amount', item.get('range', item.get('Range', ''))))
+            party = item.get('party', item.get('Party', 'Unknown'))
+            chamber = item.get('chamber', item.get('house', item.get('House', 'House')))
+
+            amount_low, amount_high = self._parse_amount_range(amount)
+
+            return CongressTrade(
+                politician=name,
+                party=self._normalize_party(party),
+                chamber=self._normalize_chamber(chamber),
+                state=item.get('state', item.get('State', '')),
+                ticker=ticker.upper(),
+                asset_description=item.get('asset', item.get('description', ticker)),
+                trade_type=self._normalize_trade_type(tx_type),
+                trade_date=self._standardize_date(tx_date),
+                disclosure_date=self._standardize_date(disclosure_date),
+                amount_range=amount,
+                amount_low=amount_low,
+                amount_high=amount_high,
+                days_to_disclose=0,
+                owner=item.get('owner', 'Self'),
+            )
+        except Exception as e:
+            logger.debug(f"Error parsing GitHub trade: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Source 6: FMP API (paid)
     # ------------------------------------------------------------------
     def _fetch_fmp_trades(self, days_back: int) -> List[CongressTrade]:
         """Fetch trades from FMP Senate/House trading endpoints."""
