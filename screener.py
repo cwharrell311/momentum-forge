@@ -541,16 +541,15 @@ class MomentumScreener:
         options_data = self.get_options_data(ticker)
         data.update(options_data)
         
-        # Get earnings/revenue data (if API key available)
-        if self.fmp_api_key:
-            earnings_data = self.get_earnings_data_fmp(ticker)
-            data.update(earnings_data)
-        else:
-            # Use Yahoo data as fallback
-            data['earnings_surprise_pct'] = None
-            rev_growth = data.get('revenue_growth')
-            data['revenue_growth_yoy'] = round(rev_growth * 100, 1) if rev_growth else None
-            data['revenue_accelerating'] = False
+        # Get earnings/revenue data from Yahoo Finance
+        # Note: FMP free tier no longer works (deprecated Aug 2025)
+        earnings_growth = data.get('earnings_growth')
+        rev_growth = data.get('revenue_growth')
+
+        # Use earnings growth as proxy for earnings surprise (positive = beating expectations)
+        data['earnings_surprise_pct'] = round(earnings_growth * 100, 1) if earnings_growth else None
+        data['revenue_growth_yoy'] = round(rev_growth * 100, 1) if rev_growth else None
+        data['revenue_accelerating'] = False  # Can't determine from Yahoo data alone
 
         # Calculate score and signals
         data['momentum_score'] = self.calculate_momentum_score(data)
