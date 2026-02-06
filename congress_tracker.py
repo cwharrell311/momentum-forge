@@ -717,15 +717,38 @@ class CongressTracker:
                 for cell in cells:
                     text = cell.get_text(strip=True)
 
-                    # Ticker pattern (1-5 uppercase letters, not common words)
-                    if re.match(r'^[A-Z]{1,5}$', text) and text not in ('BUY', 'SELL', 'USD', 'THE', 'FOR', 'AND'):
+                    # State (2 letter code) - check FIRST before ticker to avoid MN/CA/etc being seen as tickers
+                    # US state codes
+                    us_states = {'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+                                 'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+                                 'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+                                 'VA','WA','WV','WI','WY','DC'}
+                    if text in us_states and not state:
+                        state = text
+
+                    # Party detection
+                    elif text in ('Democrat', 'Republican', 'Independent', 'D', 'R', 'I'):
+                        party = text
+
+                    # Chamber detection
+                    elif text in ('House', 'Senate', 'H', 'S'):
+                        chamber = text
+
+                    # Ticker pattern (1-5 uppercase letters, not common words or states)
+                    elif re.match(r'^[A-Z]{1,5}$', text) and text not in ('BUY', 'SELL', 'USD', 'THE', 'FOR', 'AND') and text not in us_states:
                         if not ticker:  # Only take first ticker found
                             ticker = text
 
                     # Date patterns - try multiple formats
-                    # Format: Jan 15, 2026 or January 15, 2026
+                    # Format: Jan 15, 2026 or January 15, 2026 (with space)
                     elif re.match(r'^[A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}$', text):
                         tx_date = text
+                    # Format: 29 Jan2026 (no space before year - Capitol Trades format)
+                    elif re.match(r'^\d{1,2}\s+[A-Z][a-z]{2}\d{4}$', text):
+                        tx_date = text
+                    # Format: Jan2026 with day (like "29 Jan2026")
+                    elif re.match(r'^[A-Z][a-z]{2}\d{4}$', text):
+                        tx_date = text  # Partial date, will try to fix later
                     # Format: 01/15/2026 or 1/15/26
                     elif re.match(r'^\d{1,2}/\d{1,2}/\d{2,4}$', text):
                         tx_date = text
@@ -737,21 +760,9 @@ class CongressTracker:
                     elif text.lower() in ('buy', 'sell', 'purchase', 'sale', 'sold', 'bought'):
                         tx_type = text
 
-                    # Amount (contains $)
-                    elif '$' in text and not amount:
+                    # Amount (contains $ or K– pattern like "15K–50K")
+                    elif ('$' in text or re.match(r'^\d+K[–-]\d+K$', text)) and not amount:
                         amount = text
-
-                    # Party detection
-                    elif text in ('Democrat', 'Republican', 'Independent', 'D', 'R', 'I'):
-                        party = text
-
-                    # Chamber detection
-                    elif text in ('House', 'Senate', 'H', 'S'):
-                        chamber = text
-
-                    # State (2 letter code)
-                    elif re.match(r'^[A-Z]{2}$', text) and text not in ('US', 'NA', 'OK'):
-                        state = text
 
                     # Name - longer text that looks like a name (not containing common non-name patterns)
                     elif len(text) > 3 and not name:
