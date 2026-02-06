@@ -764,6 +764,12 @@ class CongressTracker:
                         elif not any(skip in text.lower() for skip in ['purchase', 'sale', 'buy', 'sell', '$', 'total']):
                             name = text
 
+                # Log first few rows to debug date extraction
+                if ticker and len(trades) < 3:
+                    cell_texts = [c.get_text(strip=True)[:40] for c in cells[:12]]
+                    logger.info(f"Capitol row cells: {cell_texts}")
+                    logger.info(f"  Extracted: ticker={ticker}, date='{tx_date}', name={name[:30]}")
+
                 if ticker:
                     amount_low, amount_high = self._parse_amount_range(amount)
                     standardized_date = self._standardize_date(tx_date)
