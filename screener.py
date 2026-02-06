@@ -526,7 +526,7 @@ class MomentumScreener:
             ticker: Stock ticker symbol
         """
         # Delay to avoid Yahoo Finance rate limiting
-        time.sleep(0.3)
+        time.sleep(0.5)
 
         # Get base data
         data = self.get_stock_data(ticker)
@@ -599,7 +599,7 @@ class MomentumScreener:
             momentum_score=data['momentum_score']
         )
     
-    def run_scan(self, min_market_cap_b: float = 2.0, max_workers: int = 3,
+    def run_scan(self, min_market_cap_b: float = 2.0, max_workers: int = 1,
                  progress_callback=None) -> List[StockSignal]:
         """
         Run full market scan.
