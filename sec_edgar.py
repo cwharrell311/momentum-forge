@@ -29,7 +29,7 @@ class SECEdgar:
 
     # SEC requires a User-Agent with contact info
     HEADERS = {
-        "User-Agent": "MomentumForge/1.0 (cwharrell@gmail.com)",
+        "User-Agent": "TidalWaveAnalytics/1.0 (cwharrell@gmail.com)",
         "Accept-Encoding": "gzip, deflate"
     }
 
@@ -349,13 +349,18 @@ class SECEdgar:
         Get a summary of key financial metrics for a stock.
 
         Returns:
-            Dict with revenue_growth_yoy, revenue_accelerating, eps_data, etc.
+            Dict with revenue/earnings growth QoQ and YoY, etc.
         """
         result = {
             'ticker': ticker,
+            # Revenue metrics
+            'revenue_growth_qoq': None,
             'revenue_growth_yoy': None,
             'revenue_accelerating': False,
             'latest_revenue': None,
+            # Earnings metrics
+            'earnings_growth_qoq': None,
+            'earnings_growth_yoy': None,
             'latest_eps': None,
             'latest_net_income': None,
             'data_source': 'SEC EDGAR'
@@ -363,26 +368,48 @@ class SECEdgar:
 
         # Get quarterly revenue
         revenues = self.get_quarterly_revenue(ticker)
+        if len(revenues) >= 2:
+            current = revenues[0]['value']
+            prev_quarter = revenues[1]['value']
+            result['latest_revenue'] = current
+
+            # QoQ revenue growth
+            if prev_quarter and prev_quarter != 0:
+                result['revenue_growth_qoq'] = round(((current - prev_quarter) / abs(prev_quarter)) * 100, 1)
+
         if len(revenues) >= 5:
             current = revenues[0]['value']
             year_ago = revenues[4]['value']  # 4 quarters back
 
-            if year_ago and year_ago > 0:
-                result['revenue_growth_yoy'] = round(((current - year_ago) / year_ago) * 100, 1)
-                result['latest_revenue'] = current
+            if year_ago and year_ago != 0:
+                result['revenue_growth_yoy'] = round(((current - year_ago) / abs(year_ago)) * 100, 1)
 
                 # Check for acceleration
                 if len(revenues) >= 6:
                     prev = revenues[1]['value']
                     prev_year_ago = revenues[5]['value']
-                    if prev_year_ago and prev_year_ago > 0:
-                        prev_growth = ((prev - prev_year_ago) / prev_year_ago) * 100
+                    if prev_year_ago and prev_year_ago != 0:
+                        prev_growth = ((prev - prev_year_ago) / abs(prev_year_ago)) * 100
                         result['revenue_accelerating'] = result['revenue_growth_yoy'] > prev_growth
 
-        # Get EPS
+        # Get EPS for earnings growth
         eps = self.get_quarterly_eps(ticker)
         if eps:
             result['latest_eps'] = eps[0]['value']
+
+            # QoQ earnings growth
+            if len(eps) >= 2:
+                current_eps = eps[0]['value']
+                prev_eps = eps[1]['value']
+                if prev_eps and prev_eps != 0:
+                    result['earnings_growth_qoq'] = round(((current_eps - prev_eps) / abs(prev_eps)) * 100, 1)
+
+            # YoY earnings growth
+            if len(eps) >= 5:
+                current_eps = eps[0]['value']
+                year_ago_eps = eps[4]['value']
+                if year_ago_eps and year_ago_eps != 0:
+                    result['earnings_growth_yoy'] = round(((current_eps - year_ago_eps) / abs(year_ago_eps)) * 100, 1)
 
         # Get net income
         net_income = self.get_quarterly_net_income(ticker)

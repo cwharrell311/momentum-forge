@@ -1,11 +1,16 @@
 """
-MomentumForge Stock Screener Backend
-Scans NASDAQ/NYSE for momentum signals.
+Tidal Wave Analytics - PEAD Stock Screener Backend
+Identifies stocks with Post-Earnings Announcement Drift patterns.
+
+Signals:
+- Earnings/Revenue surprise (positive announcements)
+- Volume spike without price movement (institutional accumulation)
+- Unusual call option activity (smart money confirmation)
 
 Data Sources:
-- Alpaca: Real-time prices, historical data, options (primary)
+- Alpaca: Real-time prices, historical data (primary)
 - SEC EDGAR: Revenue, EPS actuals (fundamentals)
-- Yahoo Finance: Analyst estimates, earnings surprise (analyst data only)
+- Yahoo Finance: Analyst estimates, earnings surprise
 """
 
 import yfinance as yf
@@ -41,9 +46,18 @@ class StockSignal:
     above_ma50: bool
     above_ma200: bool
     volume_spike_pct: float
+
+    # PEAD Accumulation Signal (volume spike + minimal price move = institutional buying)
+    accumulation_signal: bool
+    accumulation_ratio: Optional[float]  # volume_spike / abs(price_change) - higher = more accumulation
     
-    # Fundamental signals
+    # Fundamental signals - Earnings
     earnings_surprise_pct: Optional[float]
+    earnings_growth_qoq: Optional[float]  # Quarter over quarter
+    earnings_growth_yoy: Optional[float]  # Year over year
+
+    # Fundamental signals - Revenue
+    revenue_growth_qoq: Optional[float]   # Quarter over quarter
     revenue_growth_yoy: Optional[float]
     revenue_accelerating: bool
     
@@ -99,10 +113,11 @@ class MomentumScreener:
         else:
             logger.info("Alpaca not configured - falling back to Yahoo Finance")
     
-    def get_universe(self, min_market_cap_b: float = 2.0) -> List[str]:
+    def get_universe(self, min_market_cap_b: float = 0.5) -> List[str]:
         """
-        Get full list of US-traded stocks.
-        Uses SEC ticker list (10,000+ stocks), with Wikipedia/fallback as backup.
+        Get full list of US-traded stocks including small/mid caps.
+        Uses S&P 500, S&P 400 (mid cap), and S&P 600 (small cap).
+        PEAD patterns are stronger in small/mid caps where surprises aren't priced in.
         """
         # Return cached universe if available
         if self._universe_cache:
@@ -110,8 +125,8 @@ class MomentumScreener:
 
         universe = []
 
-        # Method 1: Try Wikipedia for S&P 500 (~500 stocks)
-        logger.info("Fetching S&P 500 from Wikipedia...")
+        # Method 1: Try Wikipedia for S&P 500/400/600 (~1500 stocks)
+        logger.info("Fetching S&P 500, 400, and 600 from Wikipedia...")
         universe = self._fetch_wikipedia_stocks()
 
         # Method 2: If Wikipedia fails, use SEC EDGAR ticker list (limited to 500)
@@ -143,14 +158,16 @@ class MomentumScreener:
 
     def _fetch_wikipedia_stocks(self) -> List[str]:
         """
-        Fetch S&P 500 stock list from Wikipedia (~500 stocks).
-        Limited to S&P 500 only to avoid Yahoo Finance rate limits.
+        Fetch S&P 500, S&P 400 (mid cap), and S&P 600 (small cap) from Wikipedia.
+        PEAD patterns are stronger in small/mid caps where surprises aren't priced in.
+        Total: ~1500 stocks across all market caps.
         """
         universe = []
 
         wiki_sources = [
             ('S&P 500', 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'),
-            # Removed S&P 400/600 to reduce total stocks and avoid rate limits
+            ('S&P 400 Mid Cap', 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies'),
+            ('S&P 600 Small Cap', 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'),
         ]
 
         for name, url in wiki_sources:
@@ -321,9 +338,9 @@ class MomentumScreener:
             stock = yf.Ticker(ticker)
             info = stock.info
 
-            # Basic validation
+            # Basic validation - allow small caps (500M+) for PEAD signals
             market_cap = info.get('marketCap', 0)
-            if not market_cap or market_cap < 2e9:
+            if not market_cap or market_cap < 5e8:
                 return None
 
             # Get historical data for technicals
@@ -456,78 +473,6 @@ class MomentumScreener:
                 'options_flow_description': 'Error fetching options'
             }
     
-    def get_earnings_data_fmp(self, ticker: str) -> Dict[str, Any]:
-        """
-        Fetch earnings/revenue data from Financial Modeling Prep.
-        """
-        if not self.fmp_api_key:
-            return {
-                'earnings_surprise_pct': None,
-                'revenue_growth_yoy': None,
-                'revenue_accelerating': False
-            }
-        
-        try:
-            # Get earnings surprises
-            url = f"{self.FMP_BASE_URL}/earnings-surprises/{ticker}?apikey={self.fmp_api_key}"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data and len(data) > 0:
-                    latest = data[0]
-                    actual = latest.get('actualEarningResult', 0)
-                    estimated = latest.get('estimatedEarning', 0)
-                    
-                    if estimated and estimated != 0:
-                        surprise_pct = ((actual - estimated) / abs(estimated)) * 100
-                    else:
-                        surprise_pct = None
-                else:
-                    surprise_pct = None
-            else:
-                surprise_pct = None
-            
-            # Get income statement for revenue growth
-            url = f"{self.FMP_BASE_URL}/income-statement/{ticker}?period=quarter&limit=8&apikey={self.fmp_api_key}"
-            response = requests.get(url, timeout=10)
-            
-            revenue_growth = None
-            revenue_accelerating = False
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data and len(data) >= 5:
-                    # Current quarter vs same quarter last year
-                    current_rev = data[0].get('revenue', 0)
-                    yoy_rev = data[4].get('revenue', 0) if len(data) > 4 else 0
-                    
-                    if yoy_rev and yoy_rev > 0:
-                        revenue_growth = ((current_rev - yoy_rev) / yoy_rev) * 100
-                    
-                    # Check if accelerating (this quarter's YoY > last quarter's YoY)
-                    if len(data) >= 6:
-                        prev_quarter_rev = data[1].get('revenue', 0)
-                        prev_yoy_rev = data[5].get('revenue', 0)
-                        
-                        if prev_yoy_rev and prev_yoy_rev > 0:
-                            prev_growth = ((prev_quarter_rev - prev_yoy_rev) / prev_yoy_rev) * 100
-                            revenue_accelerating = revenue_growth is not None and revenue_growth > prev_growth
-            
-            return {
-                'earnings_surprise_pct': round(surprise_pct, 1) if surprise_pct else None,
-                'revenue_growth_yoy': round(revenue_growth, 1) if revenue_growth else None,
-                'revenue_accelerating': revenue_accelerating
-            }
-            
-        except Exception as e:
-            logger.warning(f"Error fetching FMP data for {ticker}: {e}")
-            return {
-                'earnings_surprise_pct': None,
-                'revenue_growth_yoy': None,
-                'revenue_accelerating': False
-            }
-    
     def calculate_momentum_score(self, data: Dict[str, Any]) -> int:
         """
         Calculate composite momentum score (0-100).
@@ -587,23 +532,29 @@ class MomentumScreener:
     def determine_signals(self, data: Dict[str, Any]) -> List[str]:
         """
         Determine which signals are active for a stock.
+        Signals are key PEAD indicators for 60-90 day run-ups.
         """
         signals = []
-        
-        # Earnings signal
+
+        # Earnings signal - positive earnings surprise
         earnings_surprise = data.get('earnings_surprise_pct')
         if earnings_surprise is not None and earnings_surprise >= 5:
             signals.append('earnings')
-        
-        # Revenue signal
+
+        # Revenue signal - strong YoY growth
         if data.get('revenue_growth_yoy') and data['revenue_growth_yoy'] >= 10:
             signals.append('revenue')
-        
-        # Volume signal
+
+        # Volume signal - elevated volume
         if data.get('volume_spike_pct', 100) >= 150:
             signals.append('volume')
-        
-        # Options signal
+
+        # PEAD Accumulation signal - volume spike with minimal price movement
+        # This indicates institutional accumulation (smart money loading up quietly)
+        if data.get('accumulation_signal'):
+            signals.append('accumulation')
+
+        # Options signal - unusual call activity
         if data.get('unusual_options_activity') or (data.get('options_volume_ratio') and data['options_volume_ratio'] > 1.5):
             signals.append('options')
 
@@ -631,7 +582,28 @@ class MomentumScreener:
         # Get options data
         options_data = self.get_options_data(ticker)
         data.update(options_data)
-        
+
+        # Calculate PEAD Accumulation Signal
+        # Pattern: High volume spike with minimal price movement = institutional accumulation
+        # This is the "smart money loading up quietly" pattern
+        volume_spike = data.get('volume_spike_pct', 100)
+        price_change = abs(data.get('change_percent', 0))
+
+        # Calculate accumulation ratio: volume spike relative to price movement
+        # High ratio = big volume but small price move = accumulation
+        if price_change > 0.1:  # Avoid division by near-zero
+            accumulation_ratio = volume_spike / price_change
+        else:
+            accumulation_ratio = volume_spike * 10  # Treat near-zero price change as very high accumulation
+
+        # Accumulation signal: Volume spike > 150% AND price change < 2% AND ratio > 100
+        data['accumulation_signal'] = (
+            volume_spike >= 150 and
+            price_change < 2.0 and
+            accumulation_ratio > 100
+        )
+        data['accumulation_ratio'] = round(accumulation_ratio, 1)
+
         # Get earnings surprise from Yahoo Finance (they have analyst estimates)
         earnings_surprise = data.get('earnings_surprise')
         earnings_growth = data.get('earnings_growth')
@@ -647,13 +619,21 @@ class MomentumScreener:
         # Get revenue/EPS data from SEC EDGAR (official 10-Q filings)
         try:
             sec_data = self.sec_edgar.get_financials_summary(ticker)
+            # Revenue metrics
+            data['revenue_growth_qoq'] = sec_data.get('revenue_growth_qoq')
             data['revenue_growth_yoy'] = sec_data.get('revenue_growth_yoy')
             data['revenue_accelerating'] = sec_data.get('revenue_accelerating', False)
+            # Earnings metrics
+            data['earnings_growth_qoq'] = sec_data.get('earnings_growth_qoq')
+            data['earnings_growth_yoy'] = sec_data.get('earnings_growth_yoy')
             data['latest_eps'] = sec_data.get('latest_eps')
         except Exception as e:
             logger.debug(f"SEC EDGAR error for {ticker}: {e}")
+            data['revenue_growth_qoq'] = None
             data['revenue_growth_yoy'] = None
             data['revenue_accelerating'] = False
+            data['earnings_growth_qoq'] = None
+            data['earnings_growth_yoy'] = None
             data['latest_eps'] = None
 
         # Calculate score and signals
@@ -676,27 +656,38 @@ class MomentumScreener:
             above_ma50=data['above_ma50'],
             above_ma200=data['above_ma200'],
             volume_spike_pct=round(data['volume_spike_pct'], 0),
+            # PEAD Accumulation (volume spike + no price move)
+            accumulation_signal=data.get('accumulation_signal', False),
+            accumulation_ratio=data.get('accumulation_ratio'),
+            # Earnings metrics
             earnings_surprise_pct=data.get('earnings_surprise_pct'),
+            earnings_growth_qoq=data.get('earnings_growth_qoq'),
+            earnings_growth_yoy=data.get('earnings_growth_yoy'),
+            # Revenue metrics
+            revenue_growth_qoq=data.get('revenue_growth_qoq'),
             revenue_growth_yoy=data.get('revenue_growth_yoy'),
             revenue_accelerating=data.get('revenue_accelerating', False),
+            # Options metrics
             options_volume_ratio=data.get('options_volume_ratio'),
             unusual_options_activity=data.get('unusual_options_activity', False),
             options_flow_description=data.get('options_flow_description', 'Unknown'),
+            # Analyst metrics
             analyst_rating=data.get('analyst_rating'),
             analyst_count=data.get('analyst_count', 0),
             target_price=data.get('target_price'),
             analyst_upside_pct=round((data['target_price'] / data['price'] - 1) * 100, 1) if data.get('target_price') and data.get('price') else None,
+            # Computed
             signals=data['signals'],
             momentum_score=data['momentum_score']
         )
     
-    def run_scan(self, min_market_cap_b: float = 2.0, max_workers: int = 1,
+    def run_scan(self, min_market_cap_b: float = 0.5, max_workers: int = 1,
                  progress_callback=None) -> List[StockSignal]:
         """
-        Run full market scan.
+        Run full market scan for PEAD signals.
 
         Args:
-            min_market_cap_b: Minimum market cap in billions
+            min_market_cap_b: Minimum market cap in billions (default 0.5B for small caps)
             max_workers: Number of parallel threads
             progress_callback: Optional callback for progress updates
 
@@ -754,17 +745,16 @@ def main():
     """Run the screener and output results."""
     import argparse
 
-    parser = argparse.ArgumentParser(description='MomentumForge Stock Screener')
-    parser.add_argument('--fmp-key', type=str, help='Financial Modeling Prep API key')
-    parser.add_argument('--min-cap', type=float, default=2.0, help='Minimum market cap in billions')
+    parser = argparse.ArgumentParser(description='Tidal Wave Analytics - PEAD Screener')
+    parser.add_argument('--min-cap', type=float, default=0.5, help='Minimum market cap in billions')
     parser.add_argument('--output', type=str, default='results.json', help='Output file path')
     parser.add_argument('--format', choices=['json', 'csv'], default='json', help='Output format')
     args = parser.parse_args()
 
-    screener = MomentumScreener(fmp_api_key=args.fmp_key)
+    screener = MomentumScreener()
 
     print("=" * 60)
-    print("MomentumForge Stock Screener")
+    print("Tidal Wave Analytics - PEAD Screener")
     print("=" * 60)
     print(f"Min Market Cap: ${args.min_cap}B")
     print(f"Output: {args.output}")
