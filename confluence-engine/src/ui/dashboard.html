@@ -291,6 +291,16 @@
             </div>
 
             <div id="system-content" class="hidden">
+
+                <!-- Signal Layers Overview -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-white uppercase tracking-wide">Signal Layers</h3>
+                        <div id="layers-summary" class="text-xs text-slate-500"></div>
+                    </div>
+                    <div id="layers-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+                </div>
+
                 <!-- FMP Quota -->
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
                     <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">FMP API Quota</h3>
@@ -449,7 +459,7 @@
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-        Confluence Engine v0.1.0 &middot; Phase 1: Momentum + VIX Regime &middot; Scans every 15 min &middot; Dashboard refreshes every 30s
+        Confluence Engine v0.2.0 &middot; 2 of 8 signal layers active &middot; Scans every 15 min &middot; Dashboard refreshes every 30s
     </footer>
 
     <script>
@@ -512,6 +522,11 @@
                     change_pct: momentum.metadata.change_pct,
                     sma_50: momentum.metadata.sma_50,
                     sma_200: momentum.metadata.sma_200,
+                    year_high: momentum.metadata.year_high,
+                    year_low: momentum.metadata.year_low,
+                    ma_cross: momentum.metadata.ma_cross,
+                    trend_strength: momentum.metadata.trend_strength,
+                    relative_volume: momentum.metadata.relative_volume,
                 };
             }
             return { price: null, change_pct: null, sma_50: null, sma_200: null };
@@ -726,24 +741,53 @@
             let priceSummary = '';
             if (priceInfo.price) {
                 const chgClass = changeClass(priceInfo.change_pct);
+                const crossLabel = priceInfo.ma_cross === 'golden_cross' ? '<span class="text-green-400 font-semibold">Golden Cross</span>'
+                    : priceInfo.ma_cross === 'death_cross' ? '<span class="text-red-400 font-semibold">Death Cross</span>'
+                    : '<span class="text-slate-500">—</span>';
+                const trendStr = priceInfo.trend_strength != null
+                    ? `<span class="${priceInfo.trend_strength >= 0 ? 'text-green-400' : 'text-red-400'} font-mono">${priceInfo.trend_strength > 0 ? '+' : ''}${priceInfo.trend_strength.toFixed(1)}%</span>`
+                    : '<span class="text-slate-500">—</span>';
+
                 priceSummary = `
-                    <div class="bg-slate-900 rounded-lg p-4 mb-3 border border-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        <div>
-                            <div class="text-xs text-slate-500 uppercase">Price</div>
-                            <div class="text-white font-bold text-lg">${formatPrice(priceInfo.price)}</div>
+                    <div class="bg-slate-900 rounded-lg p-4 mb-3 border border-slate-700">
+                        <div class="grid grid-cols-3 sm:grid-cols-6 gap-4">
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">Price</div>
+                                <div class="text-white font-bold text-lg">${formatPrice(priceInfo.price)}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">Daily Chg</div>
+                                <div class="${chgClass} font-bold text-lg">${formatChange(priceInfo.change_pct)}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">50 SMA</div>
+                                <div class="text-slate-300 font-mono">${priceInfo.sma_50 ? formatPrice(priceInfo.sma_50) : '—'}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">200 SMA</div>
+                                <div class="text-slate-300 font-mono">${priceInfo.sma_200 ? formatPrice(priceInfo.sma_200) : '—'}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">50/200 Cross</div>
+                                <div class="text-sm">${crossLabel}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-500 uppercase">vs 50 SMA</div>
+                                <div class="text-sm">${trendStr}</div>
+                            </div>
                         </div>
-                        <div>
-                            <div class="text-xs text-slate-500 uppercase">Daily Change</div>
-                            <div class="${chgClass} font-bold text-lg">${formatChange(priceInfo.change_pct)}</div>
+                        ${priceInfo.year_high ? `
+                        <div class="mt-3 pt-3 border-t border-slate-700/50">
+                            <div class="flex items-center gap-3 text-xs">
+                                <span class="text-slate-500">52-Week Range:</span>
+                                <span class="text-red-400 font-mono">${formatPrice(priceInfo.year_low)}</span>
+                                <div class="flex-1 bg-slate-700 rounded-full h-1.5 relative">
+                                    <div class="absolute h-3 w-0.5 bg-white rounded-full top-1/2 -translate-y-1/2" style="left: ${priceInfo.year_high && priceInfo.year_low ? ((priceInfo.price - priceInfo.year_low) / (priceInfo.year_high - priceInfo.year_low) * 100) : 50}%"></div>
+                                </div>
+                                <span class="text-green-400 font-mono">${formatPrice(priceInfo.year_high)}</span>
+                            </div>
                         </div>
-                        <div>
-                            <div class="text-xs text-slate-500 uppercase">50-Day SMA</div>
-                            <div class="text-slate-300 font-mono">${priceInfo.sma_50 ? formatPrice(priceInfo.sma_50) : '—'}</div>
-                        </div>
-                        <div>
-                            <div class="text-xs text-slate-500 uppercase">200-Day SMA</div>
-                            <div class="text-slate-300 font-mono">${priceInfo.sma_200 ? formatPrice(priceInfo.sma_200) : '—'}</div>
-                        </div>
+                        ` : ''}
                     </div>
                 `;
             }
@@ -756,6 +800,14 @@
                 let metaItems = [];
                 if (signal.metadata) {
                     if (signal.metadata.ma_alignment) metaItems.push({ label: 'MA Alignment', value: signal.metadata.ma_alignment.replace(/_/g, ' ') });
+                    if (signal.metadata.ma_cross && signal.metadata.ma_cross !== 'unknown') {
+                        const crossColor = signal.metadata.ma_cross === 'golden_cross' ? 'text-green-400' : 'text-red-400';
+                        metaItems.push({ label: '50/200 Cross', value: signal.metadata.ma_cross.replace(/_/g, ' '), color: crossColor });
+                    }
+                    if (signal.metadata.trend_strength != null) {
+                        const tsColor = signal.metadata.trend_strength >= 0 ? 'text-green-400' : 'text-red-400';
+                        metaItems.push({ label: 'Trend Strength', value: `${signal.metadata.trend_strength > 0 ? '+' : ''}${signal.metadata.trend_strength.toFixed(1)}%`, color: tsColor });
+                    }
                     if (signal.metadata.relative_volume != null) metaItems.push({ label: 'Rel Volume', value: `${signal.metadata.relative_volume}x` });
                     if (signal.metadata.price_vs_52w != null) metaItems.push({ label: '52w Range', value: `${(signal.metadata.price_vs_52w * 100).toFixed(0)}%` });
                     if (signal.metadata.vix_level != null) metaItems.push({ label: 'VIX', value: Number(signal.metadata.vix_level).toFixed(1) });
@@ -783,7 +835,7 @@
                                 ${metaItems.map(item => `
                                     <div class="bg-slate-700/50 px-3 py-1.5 rounded text-xs">
                                         <span class="text-slate-500">${item.label}:</span>
-                                        <span class="text-slate-200 font-medium ml-1">${item.value}</span>
+                                        <span class="${item.color || 'text-slate-200'} font-medium ml-1">${item.value}</span>
                                     </div>
                                 `).join('')}
                             </div>
@@ -1187,9 +1239,62 @@
                     ? '<span class="text-green-400">Running</span>'
                     : '<span class="text-amber-400">Starting up...</span>';
 
+                // Load signal layers
+                loadSignalLayers();
+
             } catch (e) {
                 document.getElementById('system-error').classList.remove('hidden');
                 document.getElementById('system-content').classList.add('hidden');
+            }
+        }
+
+        async function loadSignalLayers() {
+            try {
+                const resp = await fetch(`${API}/api/v1/system/layers`);
+                if (!resp.ok) return;
+                const layers = await resp.json();
+
+                const active = layers.filter(l => l.status === 'active').length;
+                const total = layers.length;
+                document.getElementById('layers-summary').textContent = `${active} of ${total} active`;
+
+                // Update the header stat card too
+                document.getElementById('stat-layers').textContent = `${active} / ${total}`;
+
+                const grid = document.getElementById('layers-grid');
+                grid.innerHTML = '';
+
+                layers.forEach(layer => {
+                    const isActive = layer.status === 'active';
+                    const borderColor = isActive ? 'border-green-700/50' : 'border-slate-700/50';
+                    const statusBadge = isActive
+                        ? '<span class="text-[10px] bg-green-900/60 text-green-400 px-2 py-0.5 rounded-full font-semibold uppercase">Active</span>'
+                        : `<span class="text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full font-semibold uppercase">Phase ${layer.phase}</span>`;
+                    const dot = isActive
+                        ? '<span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>'
+                        : '<span class="w-2 h-2 rounded-full bg-slate-600 inline-block"></span>';
+                    const weightText = layer.weight > 0 ? `${(layer.weight * 100).toFixed(0)}%` : 'modifier';
+
+                    const card = document.createElement('div');
+                    card.className = `bg-slate-900/60 rounded-lg border ${borderColor} p-4 transition hover:border-slate-500/50`;
+                    card.innerHTML = `
+                        <div class="flex items-start justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                ${dot}
+                                <span class="text-sm font-bold ${isActive ? 'text-white' : 'text-slate-400'}">${layer.display_name}</span>
+                            </div>
+                            ${statusBadge}
+                        </div>
+                        <p class="text-xs text-slate-500 mb-3 leading-relaxed">${layer.description}</p>
+                        <div class="flex items-center gap-4 text-[10px] text-slate-600 uppercase">
+                            <span>Weight: <span class="text-slate-400">${weightText}</span></span>
+                            <span>Source: <span class="text-slate-400">${layer.data_source}</span></span>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (e) {
+                console.error('Failed to load signal layers:', e);
             }
         }
 
