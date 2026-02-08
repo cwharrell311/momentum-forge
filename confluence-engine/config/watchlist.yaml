@@ -1,58 +1,28 @@
 # Default Watchlist
-# Liquid, optionable tickers with active options markets.
-# These are good candidates for confluence scanning.
-# Add/remove via API or by editing this file.
+# FMP free tier: 250 API calls/day. Each ticker = 2 calls (quote + VIX).
+# With 15 tickers, you can scan ~8 times per day.
+# Expand this list when you upgrade to a paid FMP plan.
 
-# Mega-cap tech (highest options liquidity)
 tickers:
+  # Core positions — highest options liquidity
   - AAPL
-  - MSFT
   - NVDA
-  - GOOGL
-  - AMZN
-  - META
   - TSLA
+  - META
+  - AMZN
+  - MSFT
   - AMD
-  - AVGO
-  - CRM
+  - GOOGL
 
-  # Semiconductors
-  - SMCI
-  - ARM
-  - MRVL
-  - MU
-  - QCOM
-
-  # Growth / Momentum
+  # High momentum / active options names
   - PLTR
-  - SNOW
-  - NET
-  - CRWD
-  - DDOG
-  - PANW
+  - SMCI
+  - AVGO
 
-  # Finance
-  - JPM
-  - GS
-  - V
-  - MA
-
-  # Healthcare
-  - UNH
-  - LLY
-  - MRNA
-
-  # Energy
-  - XOM
-  - CVX
-
-  # ETFs (for broad market signals)
+  # ETFs — broad market read
   - SPY
   - QQQ
   - IWM
-  - XLF
-  - XLE
-  - ARKK
 
-  # High short interest / squeeze candidates (update regularly)
-  # Add tickers here as you spot high SI setups
+  # Add more tickers here as you upgrade your FMP plan
+  # or switch to a paid data source

@@ -1,18 +1,20 @@
 """
 Momentum / Technical Signal Processor
 
-Layer 8 in the confluence engine, but the FIRST to implement because
-it uses the free FMP API tier. Provides trend confirmation via:
-- RSI (relative strength)
-- MACD (momentum direction)
-- Moving average alignment (20/50/200 SMA)
+Uses ONLY the FMP quote endpoint (free tier) to score momentum.
+The quote response includes price, 50/200 day moving averages,
+volume, average volume, and 52-week range — everything we need
+for a solid momentum signal with just ONE API call per ticker.
+
+Scoring components:
+- Moving average alignment (price vs 50-day vs 200-day SMA)
 - Relative volume (current vs average)
-- Price position relative to 52-week range
+- Price position in 52-week range
+- Daily price change direction and magnitude
 
 This is a lagging indicator by design — it confirms what's already
-happening, not what's about to happen. That's fine. Its job in the
-confluence engine is to prevent you from taking flow signals that
-fight the trend.
+happening, not what's about to happen. Its job is to prevent you
+from taking flow signals that fight the trend.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from src.utils.data_providers import FMPClient
 
 
 class MomentumProcessor(SignalProcessor):
-    """Technical momentum signal processor using FMP API."""
+    """Technical momentum signal processor using FMP free tier quote data."""
 
     def __init__(self, fmp_client: FMPClient):
         self._fmp = fmp_client
@@ -55,37 +57,30 @@ class MomentumProcessor(SignalProcessor):
 
     async def scan_single(self, ticker: str) -> SignalResult | None:
         """
-        Fetch technical indicators and score momentum.
+        Score momentum from a single quote API call.
 
-        Scoring logic:
-        - RSI: >60 bullish, <40 bearish, 40-60 neutral
-        - MACD: histogram positive = bullish, negative = bearish
-        - MA alignment: price > 20 > 50 > 200 = strong bull trend
-        - Relative volume: >1.5x avg = confirmation of move
+        The FMP quote endpoint returns:
+        - price, priceAvg50, priceAvg200 (moving averages)
+        - volume, avgVolume (volume comparison)
+        - yearHigh, yearLow (52-week range)
+        - changesPercentage (daily change)
         """
         try:
-            # Fetch data through the shared, rate-limited FMP client
             quote = await self._fmp.get_quote(ticker)
-            rsi = await self._fmp.get_rsi(ticker)
-            macd = await self._fmp.get_macd(ticker)
-            sma = await self._fmp.get_sma_bundle(ticker)
-
             if not quote:
                 return None
 
-            # Score individual components
-            scores = self._score_components(quote, rsi, macd, sma)
+            scores = self._score_components(quote)
 
-            # Determine overall direction and strength
             bull_score = scores.get("bull_score", 0)
             bear_score = scores.get("bear_score", 0)
 
             if bull_score > bear_score:
                 direction = Direction.BULLISH
-                strength = min(bull_score / 5.0, 1.0)
+                strength = min(bull_score / 4.0, 1.0)
             elif bear_score > bull_score:
                 direction = Direction.BEARISH
-                strength = min(bear_score / 5.0, 1.0)
+                strength = min(bear_score / 4.0, 1.0)
             else:
                 direction = Direction.NEUTRAL
                 strength = 0.2
@@ -95,112 +90,109 @@ class MomentumProcessor(SignalProcessor):
                 layer=self.name,
                 direction=direction,
                 strength=strength,
-                confidence=0.7,  # Technicals are inherently medium-confidence
+                confidence=0.7,
                 timestamp=datetime.utcnow(),
                 metadata={
-                    "rsi": scores.get("rsi"),
-                    "macd_histogram": scores.get("macd_histogram"),
+                    "price": quote.get("price"),
+                    "change_pct": quote.get("changesPercentage"),
                     "ma_alignment": scores.get("ma_alignment"),
                     "relative_volume": scores.get("relative_volume"),
                     "price_vs_52w": scores.get("price_vs_52w"),
-                    "components": scores,
+                    "sma_50": quote.get("priceAvg50"),
+                    "sma_200": quote.get("priceAvg200"),
                 },
-                explanation=self._build_explanation(ticker, scores, direction),
+                explanation=self._build_explanation(ticker, quote, scores, direction),
             )
 
         except Exception as e:
             print(f"Momentum analysis failed for {ticker}: {e}")
             return None
 
-    def _score_components(
-        self,
-        quote: dict,
-        rsi: dict | None,
-        macd: dict | None,
-        sma: dict | None,
-    ) -> dict:
-        """Score each technical component and tally bull/bear points."""
-        bull_score = 0
-        bear_score = 0
+    def _score_components(self, quote: dict) -> dict:
+        """
+        Score momentum from quote data. Tally bull/bear points.
+
+        Max bull or bear score = 4 points:
+        - MA alignment: up to 2 points
+        - Relative volume: 1 point
+        - 52-week position: 0.5 points
+        - Daily change: 0.5 points
+        """
+        bull_score = 0.0
+        bear_score = 0.0
         components: dict = {}
 
-        # RSI scoring
-        rsi_value = rsi.get("rsi") if rsi else None
-        components["rsi"] = rsi_value
-        if rsi_value:
-            if rsi_value > 70:
-                bull_score += 0.5  # Overbought — strong but less conviction
-            elif rsi_value > 60:
-                bull_score += 1
-            elif rsi_value < 30:
-                bear_score += 0.5  # Oversold — could bounce
-            elif rsi_value < 40:
-                bear_score += 1
-
-        # MACD scoring
-        macd_hist = macd.get("histogram") if macd else None
-        components["macd_histogram"] = macd_hist
-        if macd_hist is not None:
-            if macd_hist > 0:
-                bull_score += 1
-            elif macd_hist < 0:
-                bear_score += 1
-
-        # Moving average alignment
         price = quote.get("price", 0)
-        sma_20 = sma.get("sma_20") if sma else None
-        sma_50 = sma.get("sma_50") if sma else None
-        sma_200 = sma.get("sma_200") if sma else None
+        sma_50 = quote.get("priceAvg50")
+        sma_200 = quote.get("priceAvg200")
 
-        if all([price, sma_20, sma_50, sma_200]):
-            if price > sma_20 > sma_50 > sma_200:
+        # Moving average alignment (the most important momentum signal)
+        # price > 50 SMA > 200 SMA = strong uptrend
+        if price and sma_50 and sma_200:
+            if price > sma_50 > sma_200:
                 components["ma_alignment"] = "strong_bull"
                 bull_score += 2
-            elif price > sma_20 > sma_50:
+            elif price > sma_50:
                 components["ma_alignment"] = "bull"
                 bull_score += 1
-            elif price < sma_20 < sma_50 < sma_200:
+            elif price < sma_50 < sma_200:
                 components["ma_alignment"] = "strong_bear"
                 bear_score += 2
-            elif price < sma_20 < sma_50:
+            elif price < sma_50:
                 components["ma_alignment"] = "bear"
                 bear_score += 1
             else:
                 components["ma_alignment"] = "mixed"
+        elif price and sma_50:
+            # Only have 50-day SMA
+            if price > sma_50:
+                components["ma_alignment"] = "bull"
+                bull_score += 1
+            else:
+                components["ma_alignment"] = "bear"
+                bear_score += 1
 
-        # Relative volume
+        # Relative volume — confirms conviction behind the move
         volume = quote.get("volume", 0)
         avg_volume = quote.get("avgVolume", 1)
-        rel_vol = volume / avg_volume if avg_volume > 0 else 1.0
+        rel_vol = volume / avg_volume if avg_volume and avg_volume > 0 else 1.0
         components["relative_volume"] = round(rel_vol, 2)
         if rel_vol > 1.5:
+            # High volume confirms whatever direction we're seeing
             if bull_score > bear_score:
                 bull_score += 1
             elif bear_score > bull_score:
                 bear_score += 1
 
-        # Price position in 52-week range
+        # 52-week range position
         year_high = quote.get("yearHigh", 0)
         year_low = quote.get("yearLow", 0)
-        if year_high > year_low > 0:
+        if year_high and year_low and year_high > year_low > 0:
             pct = (price - year_low) / (year_high - year_low)
             components["price_vs_52w"] = round(pct, 2)
             if pct > 0.8:
-                bull_score += 0.5
+                bull_score += 0.5  # Near highs = momentum
             elif pct < 0.2:
-                bear_score += 0.5
+                bear_score += 0.5  # Near lows = weakness
+
+        # Daily price change — short-term momentum
+        change_pct = quote.get("changesPercentage", 0) or 0
+        if change_pct > 1.0:
+            bull_score += 0.5
+        elif change_pct < -1.0:
+            bear_score += 0.5
 
         components["bull_score"] = bull_score
         components["bear_score"] = bear_score
         return components
 
-    def _build_explanation(self, ticker: str, scores: dict, direction: Direction) -> str:
+    def _build_explanation(
+        self, ticker: str, quote: dict, scores: dict, direction: Direction
+    ) -> str:
         """Build a human-readable explanation of the momentum signal."""
-        parts = [f"{ticker} momentum is {direction.value}."]
-
-        rsi = scores.get("rsi")
-        if rsi:
-            parts.append(f"RSI at {rsi:.0f}.")
+        price = quote.get("price", 0)
+        change = quote.get("changesPercentage", 0) or 0
+        parts = [f"{ticker} at ${price:.2f} ({change:+.1f}%) — momentum is {direction.value}."]
 
         ma = scores.get("ma_alignment")
         if ma:
@@ -209,5 +201,9 @@ class MomentumProcessor(SignalProcessor):
         rv = scores.get("relative_volume")
         if rv and rv > 1.5:
             parts.append(f"Volume {rv:.1f}x average.")
+
+        pos = scores.get("price_vs_52w")
+        if pos is not None:
+            parts.append(f"52-week range: {pos:.0%}.")
 
         return " ".join(parts)
