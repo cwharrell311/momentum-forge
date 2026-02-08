@@ -137,20 +137,28 @@ class VolatilityProcessor(SignalProcessor):
 
         Extracts IV metrics from overview data and options chain.
         """
+        # Unwrap UW's {"data": [...]} envelope if present
+        inner = overview.get("data", overview)
+        if isinstance(inner, list) and inner:
+            inner = inner[0]
+        elif isinstance(inner, list):
+            inner = {}
+
         # Try to get IV data from overview first (less API calls)
         iv_rank = self._safe_float(
             overview.get("iv_rank")
             or overview.get("ivRank")
-            or overview.get("data", {}).get("iv_rank")
+            or inner.get("iv_rank")
         )
         iv_percentile = self._safe_float(
             overview.get("iv_percentile")
-            or overview.get("data", {}).get("iv_percentile")
+            or inner.get("iv_percentile")
         )
         current_iv = self._safe_float(
             overview.get("implied_volatility")
             or overview.get("iv30")
-            or overview.get("data", {}).get("implied_volatility")
+            or inner.get("implied_volatility")
+            or inner.get("iv30")
         )
 
         # If no IV data from overview, calculate from chain
