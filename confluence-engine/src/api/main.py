@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from src.api.dependencies import cleanup_app, init_app
 from src.api.routes import confluence, regime, signals, watchlist
@@ -60,7 +62,7 @@ async def lifespan(app: FastAPI):
     # Start background scanner
     start_scheduler(interval_seconds=settings.scan_interval)
 
-    logger.info("Ready! Visit http://localhost:8000/docs for API explorer")
+    logger.info("Ready! Visit http://localhost:8000 for the dashboard")
 
     yield  # Server is running and handling requests here
 
@@ -97,6 +99,17 @@ app.include_router(confluence.router, prefix="/api/v1/confluence", tags=["conflu
 app.include_router(signals.router, prefix="/api/v1/signals", tags=["signals"])
 app.include_router(watchlist.router, prefix="/api/v1/watchlist", tags=["watchlist"])
 app.include_router(regime.router, prefix="/api/v1/regime", tags=["regime"])
+
+
+# ── Dashboard ──
+
+_dashboard_path = Path(__file__).parent.parent / "ui" / "dashboard.html"
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard():
+    """Serve the main dashboard. Open http://localhost:8000 in your browser."""
+    return _dashboard_path.read_text()
 
 
 # ── Health Check ──
