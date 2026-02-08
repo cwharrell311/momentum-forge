@@ -12,8 +12,9 @@ timer and storing results in the cache. This means:
 - Page refreshes don't burn API quota
 - You always see the latest scan results
 
-GET /api/v1/confluence         → Top confluence scores (from cache)
-GET /api/v1/confluence/{ticker} → Deep dive on a single ticker (live scan)
+GET  /api/v1/confluence         → Top confluence scores (from cache)
+POST /api/v1/confluence/scan    → Manually trigger a full scan
+GET  /api/v1/confluence/{ticker} → Deep dive on a single ticker (live scan)
 """
 
 from __future__ import annotations
@@ -106,6 +107,29 @@ async def get_confluence():
         cache_age_seconds=int(cache.age_seconds),
         scores=[_format_score(s) for s in result.scores],
     )
+
+
+@router.post("/scan")
+async def trigger_scan():
+    """
+    Manually trigger a full confluence scan.
+
+    Runs immediately instead of waiting for the next scheduled scan.
+    Returns the number of tickers scanned and top conviction score.
+    """
+    from src.services.scheduler import run_confluence_scan
+
+    await run_confluence_scan()
+
+    from src.api.dependencies import get_cache
+    cache = get_cache()
+    result = cache.latest()
+
+    if not result or not result.scores:
+        return {"status": "complete", "scanned": 0, "top_conviction": 0}
+
+    top = max(s.conviction_pct for s in result.scores)
+    return {"status": "complete", "scanned": len(result.scores), "top_conviction": top}
 
 
 @router.get("/{ticker}", response_model=ConfluenceResponse)
