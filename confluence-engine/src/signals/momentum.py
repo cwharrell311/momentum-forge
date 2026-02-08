@@ -19,18 +19,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import httpx
-
 from src.signals.base import Direction, SignalProcessor, SignalResult
+from src.utils.data_providers import FMPClient
 
 
 class MomentumProcessor(SignalProcessor):
     """Technical momentum signal processor using FMP API."""
 
-    def __init__(self, api_key: str, base_url: str = "https://financialmodelingprep.com/api/v3"):
-        self.api_key = api_key
-        self.base_url = base_url
-        self._client = httpx.AsyncClient(timeout=30.0)
+    def __init__(self, fmp_client: FMPClient):
+        self._fmp = fmp_client
 
     @property
     def name(self) -> str:
@@ -67,14 +64,13 @@ class MomentumProcessor(SignalProcessor):
         - Relative volume: >1.5x avg = confirmation of move
         """
         try:
-            # Fetch technical indicators from FMP
-            # These are placeholder endpoints — adjust to actual FMP API structure
-            quote = await self._fetch_quote(ticker)
-            rsi = await self._fetch_rsi(ticker)
-            macd = await self._fetch_macd(ticker)
-            sma = await self._fetch_sma(ticker)
+            # Fetch data through the shared, rate-limited FMP client
+            quote = await self._fmp.get_quote(ticker)
+            rsi = await self._fmp.get_rsi(ticker)
+            macd = await self._fmp.get_macd(ticker)
+            sma = await self._fmp.get_sma_bundle(ticker)
 
-            if not all([quote, rsi]):
+            if not quote:
                 return None
 
             # Score individual components
@@ -86,7 +82,7 @@ class MomentumProcessor(SignalProcessor):
 
             if bull_score > bear_score:
                 direction = Direction.BULLISH
-                strength = min(bull_score / 5.0, 1.0)  # Normalize to 0-1
+                strength = min(bull_score / 5.0, 1.0)
             elif bear_score > bull_score:
                 direction = Direction.BEARISH
                 strength = min(bear_score / 5.0, 1.0)
@@ -126,20 +122,20 @@ class MomentumProcessor(SignalProcessor):
         """Score each technical component and tally bull/bear points."""
         bull_score = 0
         bear_score = 0
-        components = {}
+        components: dict = {}
 
         # RSI scoring
         rsi_value = rsi.get("rsi") if rsi else None
         components["rsi"] = rsi_value
         if rsi_value:
-            if rsi_value > 60:
+            if rsi_value > 70:
+                bull_score += 0.5  # Overbought — strong but less conviction
+            elif rsi_value > 60:
                 bull_score += 1
-            elif rsi_value > 70:
-                bull_score += 0.5  # Overbought — less conviction
+            elif rsi_value < 30:
+                bear_score += 0.5  # Oversold — could bounce
             elif rsi_value < 40:
                 bear_score += 1
-            elif rsi_value < 30:
-                bear_score += 0.5  # Oversold — less conviction (could bounce)
 
         # MACD scoring
         macd_hist = macd.get("histogram") if macd else None
@@ -178,7 +174,6 @@ class MomentumProcessor(SignalProcessor):
         rel_vol = volume / avg_volume if avg_volume > 0 else 1.0
         components["relative_volume"] = round(rel_vol, 2)
         if rel_vol > 1.5:
-            # High volume confirms whatever direction we're seeing
             if bull_score > bear_score:
                 bull_score += 1
             elif bear_score > bull_score:
@@ -191,9 +186,9 @@ class MomentumProcessor(SignalProcessor):
             pct = (price - year_low) / (year_high - year_low)
             components["price_vs_52w"] = round(pct, 2)
             if pct > 0.8:
-                bull_score += 0.5  # Near highs — momentum
+                bull_score += 0.5
             elif pct < 0.2:
-                bear_score += 0.5  # Near lows — weakness
+                bear_score += 0.5
 
         components["bull_score"] = bull_score
         components["bear_score"] = bear_score
@@ -216,58 +211,3 @@ class MomentumProcessor(SignalProcessor):
             parts.append(f"Volume {rv:.1f}x average.")
 
         return " ".join(parts)
-
-    # --- FMP API Methods ---
-    # These will need adjustment based on your actual FMP plan/endpoints
-
-    async def _fetch_quote(self, ticker: str) -> dict | None:
-        """Fetch current quote data."""
-        url = f"{self.base_url}/quote/{ticker}"
-        resp = await self._client.get(url, params={"apikey": self.api_key})
-        if resp.status_code == 200:
-            data = resp.json()
-            return data[0] if data else None
-        return None
-
-    async def _fetch_rsi(self, ticker: str, period: int = 14) -> dict | None:
-        """Fetch RSI indicator."""
-        url = f"{self.base_url}/technical_indicator/daily/{ticker}"
-        resp = await self._client.get(
-            url,
-            params={"period": period, "type": "rsi", "apikey": self.api_key},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data[0] if data else None
-        return None
-
-    async def _fetch_macd(self, ticker: str) -> dict | None:
-        """Fetch MACD indicator."""
-        url = f"{self.base_url}/technical_indicator/daily/{ticker}"
-        resp = await self._client.get(
-            url,
-            params={"type": "macd", "apikey": self.api_key},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data[0] if data else None
-        return None
-
-    async def _fetch_sma(self, ticker: str) -> dict | None:
-        """Fetch SMA values at 20, 50, 200 periods."""
-        result = {}
-        for period in [20, 50, 200]:
-            url = f"{self.base_url}/technical_indicator/daily/{ticker}"
-            resp = await self._client.get(
-                url,
-                params={"period": period, "type": "sma", "apikey": self.api_key},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data:
-                    result[f"sma_{period}"] = data[0].get("sma")
-        return result if result else None
-
-    async def close(self):
-        """Clean up HTTP client."""
-        await self._client.aclose()

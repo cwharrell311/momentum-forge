@@ -6,30 +6,26 @@ the confluence engine weights other layers. When the market is stressed,
 bullish signals should be discounted and bearish signals amplified.
 
 Regime classification:
-- CALM:     VIX < 15, futures in contango       → Risk-on, trust bullish flow
-- ELEVATED: VIX 15-25, normal                   → Balanced weighting
-- STRESSED: VIX 25-35, futures in backwardation  → Discount bullish, boost bearish
-- CRISIS:   VIX > 35, deep backwardation         → Heavy bearish bias, cash is king
+- CALM:     VIX < 15, futures in contango       -> Risk-on, trust bullish flow
+- ELEVATED: VIX 15-25, normal                   -> Balanced weighting
+- STRESSED: VIX 25-35, futures in backwardation  -> Discount bullish, boost bearish
+- CRISIS:   VIX > 35, deep backwardation         -> Heavy bearish bias, cash is king
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-import httpx
-
 from src.signals.base import Direction, Regime, SignalProcessor, SignalResult
+from src.utils.data_providers import FMPClient
 
 
 class VixRegimeProcessor(SignalProcessor):
     """VIX regime classification using FMP API."""
 
-    def __init__(self, api_key: str, base_url: str = "https://financialmodelingprep.com/api/v3"):
-        self.api_key = api_key
-        self.base_url = base_url
-        self._client = httpx.AsyncClient(timeout=30.0)
+    def __init__(self, fmp_client: FMPClient):
+        self._fmp = fmp_client
         self._cached_regime: Regime | None = None
-        self._cache_time: datetime | None = None
 
     @property
     def name(self) -> str:
@@ -51,7 +47,7 @@ class VixRegimeProcessor(SignalProcessor):
     async def scan_single(self, ticker: str = "VIX") -> SignalResult | None:
         """Classify current VIX regime."""
         try:
-            vix_quote = await self._fetch_vix()
+            vix_quote = await self._fmp.get_vix_quote()
             if not vix_quote:
                 return None
 
@@ -59,7 +55,7 @@ class VixRegimeProcessor(SignalProcessor):
             regime = self._classify_regime(vix_level)
 
             # Determine directional bias from regime
-            if regime in (Regime.CALM,):
+            if regime == Regime.CALM:
                 direction = Direction.BULLISH
                 strength = 0.7
             elif regime == Regime.ELEVATED:
@@ -86,14 +82,7 @@ class VixRegimeProcessor(SignalProcessor):
                     "vix_level": vix_level,
                     "vix_change": vix_quote.get("changesPercentage", 0),
                 },
-                explanation=(
-                    f"Market regime: {regime.value.upper()}. "
-                    f"VIX at {vix_level:.1f}. "
-                    f"{'Risk-on environment.' if regime == Regime.CALM else ''}"
-                    f"{'Elevated caution warranted.' if regime == Regime.ELEVATED else ''}"
-                    f"{'Stressed market — discount bullish signals.' if regime == Regime.STRESSED else ''}"
-                    f"{'Crisis mode — extreme caution.' if regime == Regime.CRISIS else ''}"
-                ),
+                explanation=self._build_explanation(regime, vix_level),
             )
 
         except Exception as e:
@@ -102,8 +91,6 @@ class VixRegimeProcessor(SignalProcessor):
 
     def _classify_regime(self, vix_level: float) -> Regime:
         """Classify regime based on VIX level."""
-        # TODO: Add VIX futures term structure analysis (contango/backwardation)
-        # For MVP, level-based classification is sufficient
         if vix_level < 15:
             return Regime.CALM
         elif vix_level < 25:
@@ -113,14 +100,16 @@ class VixRegimeProcessor(SignalProcessor):
         else:
             return Regime.CRISIS
 
-    async def _fetch_vix(self) -> dict | None:
-        """Fetch current VIX quote."""
-        url = f"{self.base_url}/quote/%5EVIX"
-        resp = await self._client.get(url, params={"apikey": self.api_key})
-        if resp.status_code == 200:
-            data = resp.json()
-            return data[0] if data else None
-        return None
-
-    async def close(self):
-        await self._client.aclose()
+    def _build_explanation(self, regime: Regime, vix_level: float) -> str:
+        """Human-readable regime explanation."""
+        descriptions = {
+            Regime.CALM: "Risk-on environment.",
+            Regime.ELEVATED: "Elevated caution warranted.",
+            Regime.STRESSED: "Stressed market — discount bullish signals.",
+            Regime.CRISIS: "Crisis mode — extreme caution.",
+        }
+        return (
+            f"Market regime: {regime.value.upper()}. "
+            f"VIX at {vix_level:.1f}. "
+            f"{descriptions[regime]}"
+        )
