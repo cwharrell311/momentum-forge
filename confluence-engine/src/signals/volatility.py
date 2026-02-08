@@ -88,8 +88,8 @@ class VolatilityProcessor(SignalProcessor):
             return None
 
         try:
-            # Get ticker overview (often includes IV data)
-            overview = await self._uw.get_ticker_overview(ticker)
+            # Get interpolated IV data (IV rank, percentile, current IV)
+            overview = await self._uw.get_interpolated_iv(ticker)
             # Get options chain for detailed IV analysis
             chain = await self._uw.get_option_chain(ticker)
 

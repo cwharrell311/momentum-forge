@@ -158,11 +158,13 @@ class GexProcessor(SignalProcessor):
 
             call_gamma = self._safe_float(
                 strike_data.get("call_gex")
-                or strike_data.get("call_gamma_exposure", 0)
+                or strike_data.get("call_gamma_exposure")
+                or strike_data.get("call_gamma_oi", 0)
             )
             put_gamma = self._safe_float(
                 strike_data.get("put_gex")
-                or strike_data.get("put_gamma_exposure", 0)
+                or strike_data.get("put_gamma_exposure")
+                or strike_data.get("put_gamma_oi", 0)
             )
 
             call_gex_total += call_gamma

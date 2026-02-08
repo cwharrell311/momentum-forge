@@ -413,21 +413,14 @@ class UnusualWhalesClient:
 
     async def get_flow_alerts(self, ticker: str) -> list[dict]:
         """
-        Get options flow alerts for a specific ticker.
+        Get recent options flow for a specific ticker.
 
-        Returns recent flow alerts including sweeps, blocks, golden sweeps,
-        and unusual activity. Each alert includes:
-        - alert_rule: sweep, block, golden_sweep, unusual_vol, etc.
-        - sentiment: bullish, bearish, neutral
-        - total_premium: dollar value of the trade
-        - volume, open_interest: for vol/OI analysis
-        - option_type: call or put
-        - strike, expiry: contract details
-        - bid_ask_side: at_bid, at_ask, mid (critical for true sentiment)
+        Returns recent flow including sweeps, blocks, golden sweeps,
+        and unusual activity.
 
-        UW endpoint: /stock/{ticker}/flow
+        UW endpoint: /stock/{ticker}/flow-recent
         """
-        data = await self._get(f"stock/{ticker}/flow")
+        data = await self._get(f"stock/{ticker}/flow-recent")
         if isinstance(data, dict):
             return data.get("data", [])
         if isinstance(data, list):
@@ -440,9 +433,12 @@ class UnusualWhalesClient:
 
         Useful for discovering new tickers with unusual activity.
 
-        UW endpoint: /flow/alerts
+        UW endpoint: /option-trades/flow-alerts
         """
-        data = await self._get("flow/alerts", params={"limit": limit})
+        data = await self._get(
+            "option-trades/flow-alerts",
+            params={"limit": limit},
+        )
         if isinstance(data, dict):
             return data.get("data", [])
         if isinstance(data, list):
@@ -451,7 +447,10 @@ class UnusualWhalesClient:
 
     async def get_flow_by_expiry(self, ticker: str, expiry: str) -> list[dict]:
         """Get flow for a specific ticker and expiration date (YYYY-MM-DD)."""
-        data = await self._get(f"stock/{ticker}/flow", params={"expiry": expiry})
+        data = await self._get(
+            f"stock/{ticker}/flow-recent",
+            params={"expiry": expiry},
+        )
         if isinstance(data, dict):
             return data.get("data", [])
         if isinstance(data, list):
@@ -462,7 +461,7 @@ class UnusualWhalesClient:
 
     async def get_greek_exposure(self, ticker: str) -> dict | None:
         """
-        Get gamma/delta exposure (GEX/DEX) data for a ticker.
+        Get spot gamma exposure (GEX) data by strike for a ticker.
 
         GEX = Gamma x OI x 100 x Spot Price
         - Positive GEX: dealers long gamma -> mean-reverting
@@ -470,19 +469,20 @@ class UnusualWhalesClient:
 
         Returns strike-level gamma exposure and key levels (gamma walls).
 
-        UW endpoint: /stock/{ticker}/greek-exposure
+        UW endpoint: /stock/{ticker}/spot-exposures/strike
         """
-        data = await self._get(f"stock/{ticker}/greek-exposure")
+        data = await self._get(f"stock/{ticker}/spot-exposures/strike")
         if isinstance(data, dict):
             return data
         return None
 
-    async def get_greek_exposure_by_expiry(self, ticker: str, expiry: str) -> dict | None:
-        """Get GEX data filtered by a specific expiration date."""
-        data = await self._get(
-            f"stock/{ticker}/greek-exposure",
-            params={"expiry": expiry},
-        )
+    async def get_greek_exposure_by_strike(self, ticker: str) -> dict | None:
+        """
+        Get static (non-spot) Greek exposure by strike.
+
+        UW endpoint: /stock/{ticker}/greek-exposure/strike
+        """
+        data = await self._get(f"stock/{ticker}/greek-exposure/strike")
         if isinstance(data, dict):
             return data
         return None
@@ -566,25 +566,43 @@ class UnusualWhalesClient:
 
         Returns aggregate put/call volume, put/call OI, put/call ratio.
 
-        UW endpoint: /stock/{ticker}/volume-oi
+        UW endpoint: /stock/{ticker}/options-volume
         """
-        data = await self._get(f"stock/{ticker}/volume-oi")
+        data = await self._get(f"stock/{ticker}/options-volume")
         if isinstance(data, dict):
             return data
         return None
 
-    # ── Ticker Overview ──────────────────────────────────────────
+    # ── Interpolated IV ──────────────────────────────────────────
 
-    async def get_ticker_overview(self, ticker: str) -> dict | None:
+    async def get_interpolated_iv(self, ticker: str) -> dict | None:
         """
-        Get a comprehensive overview of a ticker from UW.
+        Get interpolated IV data and percentiles for a ticker.
 
-        UW endpoint: /stock/{ticker}
+        Includes: IV rank, IV percentile, current IV, historical IV.
+        Used by the volatility signal processor.
+
+        UW endpoint: /stock/{ticker}/interpolated-iv
         """
-        data = await self._get(f"stock/{ticker}")
+        data = await self._get(f"stock/{ticker}/interpolated-iv")
         if isinstance(data, dict):
             return data
         return None
+
+    # ── Net Premium Ticks ────────────────────────────────────────
+
+    async def get_net_prem_ticks(self, ticker: str) -> list[dict]:
+        """
+        Get net premium tick data for a ticker.
+
+        UW endpoint: /stock/{ticker}/net-prem-ticks
+        """
+        data = await self._get(f"stock/{ticker}/net-prem-ticks")
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
 
     async def close(self) -> None:
         """Shut down the HTTP client."""
