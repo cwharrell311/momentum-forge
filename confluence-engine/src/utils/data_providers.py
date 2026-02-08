@@ -318,15 +318,26 @@ class AlpacaClient:
 
 class UnusualWhalesClient:
     """
-    Unusual Whales API client — Phase 2.
+    Unusual Whales API client.
 
-    Will provide: options flow (sweeps, blocks, unusual OI),
-    GEX/dealer positioning, dark pool prints.
+    Provides access to institutional-grade options flow, GEX/dealer positioning,
+    dark pool prints, short interest, and options chain data.
 
-    Placeholder until you have a Platinum subscription.
+    API Docs: https://api.unusualwhales.com/docs
+    OpenAPI Spec: https://api.unusualwhales.com/api/openapi
+
+    Basic tier ($150/mo): 120 req/min, 15K req/day, REST only.
+
+    Rate limit headers returned by UW:
+    - x-uw-daily-req-count: calls made today
+    - x-uw-token-req-limit: daily limit
+    - x-uw-minute-req-counter: calls this minute
+    - x-uw-req-per-minute-remaining: remaining this minute
     """
 
     BASE_URL = "https://api.unusualwhales.com/api"
+    DAILY_QUOTA = 15_000   # Basic tier
+    PER_MINUTE = 120       # Basic tier
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -334,28 +345,244 @@ class UnusualWhalesClient:
             timeout=30.0,
             headers={"Authorization": f"Bearer {api_key}"},
         )
+        # UW Basic: 120 req/min = 2 req/sec steady state
         self._limiter = RateLimiter(rate=2.0, max_tokens=5)
+        # Quota tracking
+        self._call_count = 0
+        self._error_count = 0
+        self._last_reset_date: str = _today()
 
-    async def _get(self, path: str, params: dict | None = None) -> dict | None:
+    def _check_date_reset(self) -> None:
+        """Reset counters if it's a new day."""
+        today = _today()
+        if today != self._last_reset_date:
+            self._call_count = 0
+            self._error_count = 0
+            self._last_reset_date = today
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if UW API key is set."""
+        return bool(self.api_key)
+
+    @property
+    def quota_status(self) -> dict:
+        """Get current UW quota usage stats."""
+        self._check_date_reset()
+        return {
+            "calls_today": self._call_count,
+            "errors_today": self._error_count,
+            "quota_limit": self.DAILY_QUOTA,
+            "quota_remaining": max(0, self.DAILY_QUOTA - self._call_count),
+            "quota_pct_used": round(self._call_count / self.DAILY_QUOTA * 100, 1),
+            "date": self._last_reset_date,
+        }
+
+    async def _get(self, path: str, params: dict | None = None) -> dict | list | None:
         """Make a rate-limited GET request to Unusual Whales."""
         if not self.api_key:
             return None
 
+        self._check_date_reset()
         await self._limiter.acquire()
 
         try:
+            self._call_count += 1
             resp = await self._client.get(
                 f"{self.BASE_URL}/{path}",
                 params=params,
             )
+            if resp.status_code == 429:
+                print(f"UW RATE LIMITED (429): {path}")
+                return None
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
+            self._error_count += 1
             print(f"UW API error ({e.response.status_code}): {path}")
             return None
         except httpx.RequestError as e:
+            self._error_count += 1
             print(f"UW request failed: {e}")
             return None
 
+    # ── Options Flow ─────────────────────────────────────────────
+
+    async def get_flow_alerts(self, ticker: str) -> list[dict]:
+        """
+        Get options flow alerts for a specific ticker.
+
+        Returns recent flow alerts including sweeps, blocks, golden sweeps,
+        and unusual activity. Each alert includes:
+        - alert_rule: sweep, block, golden_sweep, unusual_vol, etc.
+        - sentiment: bullish, bearish, neutral
+        - total_premium: dollar value of the trade
+        - volume, open_interest: for vol/OI analysis
+        - option_type: call or put
+        - strike, expiry: contract details
+        - bid_ask_side: at_bid, at_ask, mid (critical for true sentiment)
+
+        UW endpoint: /stock/{ticker}/flow
+        """
+        data = await self._get(f"stock/{ticker}/flow")
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_market_flow(self, limit: int = 200) -> list[dict]:
+        """
+        Get market-wide options flow alerts (all tickers).
+
+        Useful for discovering new tickers with unusual activity.
+
+        UW endpoint: /flow/alerts
+        """
+        data = await self._get("flow/alerts", params={"limit": limit})
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_flow_by_expiry(self, ticker: str, expiry: str) -> list[dict]:
+        """Get flow for a specific ticker and expiration date (YYYY-MM-DD)."""
+        data = await self._get(f"stock/{ticker}/flow", params={"expiry": expiry})
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    # ── Greek Exposure (GEX) ─────────────────────────────────────
+
+    async def get_greek_exposure(self, ticker: str) -> dict | None:
+        """
+        Get gamma/delta exposure (GEX/DEX) data for a ticker.
+
+        GEX = Gamma x OI x 100 x Spot Price
+        - Positive GEX: dealers long gamma -> mean-reverting
+        - Negative GEX: dealers short gamma -> trending
+
+        Returns strike-level gamma exposure and key levels (gamma walls).
+
+        UW endpoint: /stock/{ticker}/greek-exposure
+        """
+        data = await self._get(f"stock/{ticker}/greek-exposure")
+        if isinstance(data, dict):
+            return data
+        return None
+
+    async def get_greek_exposure_by_expiry(self, ticker: str, expiry: str) -> dict | None:
+        """Get GEX data filtered by a specific expiration date."""
+        data = await self._get(
+            f"stock/{ticker}/greek-exposure",
+            params={"expiry": expiry},
+        )
+        if isinstance(data, dict):
+            return data
+        return None
+
+    # ── Options Chain (for IV/Volatility analysis) ───────────────
+
+    async def get_option_chain(self, ticker: str) -> list[dict]:
+        """
+        Get the full options chain for a ticker.
+
+        Each contract includes: strike, expiry, option_type, bid, ask,
+        implied_volatility, volume, open_interest, delta, gamma, theta, vega.
+
+        Used for: IV rank, volatility surface, put/call skew, term structure.
+
+        UW endpoint: /stock/{ticker}/option-contracts
+        """
+        data = await self._get(f"stock/{ticker}/option-contracts")
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_option_chain_by_expiry(self, ticker: str, expiry: str) -> list[dict]:
+        """Get options chain for a specific expiration date."""
+        data = await self._get(
+            f"stock/{ticker}/option-contracts",
+            params={"expiry": expiry},
+        )
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    # ── Dark Pool ────────────────────────────────────────────────
+
+    async def get_dark_pool_flow(self, ticker: str) -> list[dict]:
+        """
+        Get dark pool (off-exchange) prints for a ticker.
+
+        FINRA ATS data showing block trades and large off-exchange prints.
+        Block trades: >10K shares or >$200K notional.
+
+        Each print includes: volume, price, notional_value, trade_count,
+        dark_pool_short_volume, date.
+
+        UW endpoint: /darkpool/{ticker}
+        """
+        data = await self._get(f"darkpool/{ticker}")
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    # ── Short Interest ───────────────────────────────────────────
+
+    async def get_short_interest(self, ticker: str) -> dict | None:
+        """
+        Get short interest data for a ticker.
+
+        Includes: short_interest (shares), short_interest_pct_float,
+        days_to_cover, short_interest_change_pct, date.
+
+        Updated bi-weekly by FINRA.
+
+        UW endpoint: /stock/{ticker}/short-interest
+        """
+        data = await self._get(f"stock/{ticker}/short-interest")
+        if isinstance(data, dict):
+            return data
+        return None
+
+    # ── Volume/OI Overview ───────────────────────────────────────
+
+    async def get_volume_oi(self, ticker: str) -> dict | None:
+        """
+        Get options volume and open interest overview.
+
+        Returns aggregate put/call volume, put/call OI, put/call ratio.
+
+        UW endpoint: /stock/{ticker}/volume-oi
+        """
+        data = await self._get(f"stock/{ticker}/volume-oi")
+        if isinstance(data, dict):
+            return data
+        return None
+
+    # ── Ticker Overview ──────────────────────────────────────────
+
+    async def get_ticker_overview(self, ticker: str) -> dict | None:
+        """
+        Get a comprehensive overview of a ticker from UW.
+
+        UW endpoint: /stock/{ticker}
+        """
+        data = await self._get(f"stock/{ticker}")
+        if isinstance(data, dict):
+            return data
+        return None
+
     async def close(self) -> None:
+        """Shut down the HTTP client."""
         await self._client.aclose()

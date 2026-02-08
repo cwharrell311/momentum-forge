@@ -26,11 +26,24 @@ class QuotaStatus(BaseModel):
     date: str
 
 
+class ApiQuotaStatus(BaseModel):
+    provider: str
+    calls_today: int
+    errors_today: int
+    quota_limit: int
+    quota_remaining: int
+    quota_pct_used: float
+    configured: bool
+
+
 class SystemStatus(BaseModel):
     fmp_quota: QuotaStatus
+    uw_quota: ApiQuotaStatus | None
     cache_has_data: bool
     cache_age_seconds: float | None
     db_connected: bool
+    active_layers: int
+    total_layers: int
 
 
 class LayerStatus(BaseModel):
@@ -52,7 +65,7 @@ async def system_status():
     Shows FMP API quota remaining, cache freshness, and DB connectivity.
     Check this if signals aren't updating — usually means quota is exhausted.
     """
-    from src.api.dependencies import get_cache, get_fmp_client
+    from src.api.dependencies import get_cache, get_fmp_client, get_processors, get_uw_client
 
     # FMP quota
     fmp = get_fmp_client()
@@ -62,9 +75,29 @@ async def system_status():
         "date": "",
     }
 
+    # UW quota
+    uw = get_uw_client()
+    uw_quota = None
+    if uw and uw.is_configured:
+        uw_status = uw.quota_status
+        uw_quota = ApiQuotaStatus(
+            provider="Unusual Whales",
+            calls_today=uw_status["calls_today"],
+            errors_today=uw_status["errors_today"],
+            quota_limit=uw_status["quota_limit"],
+            quota_remaining=uw_status["quota_remaining"],
+            quota_pct_used=uw_status["quota_pct_used"],
+            configured=True,
+        )
+
     # Cache status
     cache = get_cache()
     cache_age = cache.age_seconds if cache.has_data else None
+
+    # Layer counts
+    processors = get_processors()
+    total_layers = len(LAYER_REGISTRY)
+    active_layers = len(processors)
 
     # DB connectivity
     db_ok = False
@@ -80,9 +113,12 @@ async def system_status():
 
     return SystemStatus(
         fmp_quota=QuotaStatus(**quota),
+        uw_quota=uw_quota,
         cache_has_data=cache.has_data,
         cache_age_seconds=round(cache_age, 1) if cache_age is not None else None,
         db_connected=db_ok,
+        active_layers=active_layers,
+        total_layers=total_layers,
     )
 
 
@@ -108,38 +144,38 @@ LAYER_REGISTRY: list[dict] = [
         "name": "options_flow",
         "display_name": "Options Flow",
         "phase": 2,
-        "data_source": "Unusual Whales ($50/mo)",
-        "description": "Detects unusual sweeps, large blocks, and abnormal open interest changes — smart money footprints",
-        "refresh_seconds": 120,
+        "data_source": "Unusual Whales (Basic $150/mo)",
+        "description": "Institutional flow: golden sweeps, blocks, bid/ask sentiment analysis. Highest-weighted signal (0.25)",
+        "refresh_seconds": 300,
     },
     {
         "name": "gex",
         "display_name": "GEX / Dealer Positioning",
         "phase": 2,
-        "data_source": "Unusual Whales ($50/mo)",
-        "description": "Gamma exposure levels that reveal where dealers are forced to hedge — identifies magnetic price levels",
+        "data_source": "Unusual Whales (Basic $150/mo)",
+        "description": "Gamma exposure reveals dealer hedging: positive GEX = mean-reverting, negative GEX = trending. Identifies gamma walls",
         "refresh_seconds": 300,
     },
     {
         "name": "volatility",
         "display_name": "Volatility Surface",
         "phase": 2,
-        "data_source": "Unusual Whales ($50/mo)",
-        "description": "IV rank, skew analysis, and term structure — detects when options are pricing in a big move",
-        "refresh_seconds": 300,
+        "data_source": "Unusual Whales (Basic $150/mo)",
+        "description": "IV rank, put/call skew, term structure. Detects when options are cheap/expensive and hidden fear/greed",
+        "refresh_seconds": 600,
     },
     {
         "name": "dark_pool",
         "display_name": "Dark Pool Activity",
-        "phase": 3,
-        "data_source": "Unusual Whales ($50/mo)",
-        "description": "Off-exchange block prints that reveal institutional accumulation or distribution",
-        "refresh_seconds": 600,
+        "phase": 2,
+        "data_source": "Unusual Whales (Basic $150/mo)",
+        "description": "FINRA ATS data: institutional accumulation/distribution patterns, block trades, short volume ratio",
+        "refresh_seconds": 900,
     },
     {
         "name": "insider",
         "display_name": "Insider Trading",
-        "phase": 3,
+        "phase": 1,
         "data_source": "FMP (free tier)",
         "description": "SEC Form 4 filings — cluster buying by C-suite is one of the strongest long-term signals",
         "refresh_seconds": 86400,
@@ -147,9 +183,9 @@ LAYER_REGISTRY: list[dict] = [
     {
         "name": "short_interest",
         "display_name": "Short Interest",
-        "phase": 3,
-        "data_source": "Unusual Whales ($50/mo)",
-        "description": "Short interest ratio, days to cover, and cost to borrow — identifies squeeze potential",
+        "phase": 2,
+        "data_source": "Unusual Whales (Basic $150/mo)",
+        "description": "SI% of float, days to cover, squeeze potential. Contrarian signal — high SI = squeeze fuel",
         "refresh_seconds": 3600,
     },
 ]

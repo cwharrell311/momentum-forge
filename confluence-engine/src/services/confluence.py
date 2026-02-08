@@ -4,10 +4,15 @@ Confluence Scoring Engine
 The brain of the platform. Combines independent signal layers into
 a single conviction score per ticker. This is where the "holy grail"
 lives — not in any single signal, but in their convergence.
+
+Architecture: All signal processors run in PARALLEL using asyncio.gather.
+Each layer is a fully independent agent — if one is slow or fails, the
+others complete unaffected. The engine scores whatever data is available.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from src.signals.base import (
@@ -52,6 +57,10 @@ class ConfluenceEngine:
     """
     Combines signals from all active processors into confluence scores.
 
+    All processors run in PARALLEL — each is an independent agent that
+    fetches its own data, scores independently, and returns results.
+    The engine then combines everything into a unified conviction score.
+
     Usage:
         engine = ConfluenceEngine(processors=[flow, gex, vol, momentum, vix])
         scores = await engine.scan_all(tickers=["AAPL", "NVDA", "TSLA"])
@@ -73,10 +82,10 @@ class ConfluenceEngine:
         for p in processors:
             if p.name == "vix_regime":
                 self._regime_processor = p
-            else:
-                self._signal_processors = [
-                    p for p in processors if p.name != "vix_regime"
-                ]
+
+        self._signal_processors = [
+            p for p in processors if p.name != "vix_regime"
+        ]
 
     async def get_current_regime(self) -> Regime:
         """Determine current market regime from VIX data."""
@@ -93,24 +102,36 @@ class ConfluenceEngine:
         """
         Scan all tickers across all signal layers and compute confluence scores.
 
+        All processors run in PARALLEL via asyncio.gather. Each processor is
+        an independent agent — if one fails or is slow, the others complete
+        unaffected. The engine scores whatever data is available.
+
         Returns a list of ConfluenceScore objects sorted by conviction (highest first).
         Only returns tickers that have at least 1 active signal.
         """
         regime = await self.get_current_regime()
 
-        # Gather signals from all processors
+        # Gather signals from all processors IN PARALLEL
         all_signals: dict[str, list[SignalResult]] = {t: [] for t in tickers}
 
-        for processor in self._signal_processors:
+        async def _run_processor(processor: SignalProcessor) -> list[SignalResult]:
+            """Run a single processor as an independent agent."""
             try:
-                results = await processor.scan(tickers)
-                for signal in results:
-                    if signal.ticker in all_signals:
-                        all_signals[signal.ticker].append(signal)
+                return await processor.scan(tickers)
             except Exception as e:
-                # Log error but don't let one failed processor kill everything
-                print(f"Warning: {processor.name} failed: {e}")
-                continue
+                print(f"Warning: {processor.name} agent failed: {e}")
+                return []
+
+        # Fire all processors simultaneously — each is an independent agent
+        results_per_processor = await asyncio.gather(
+            *[_run_processor(p) for p in self._signal_processors]
+        )
+
+        # Collect all signals by ticker
+        for results in results_per_processor:
+            for signal in results:
+                if signal.ticker in all_signals:
+                    all_signals[signal.ticker].append(signal)
 
         # Score each ticker
         scores: list[ConfluenceScore] = []
@@ -126,18 +147,27 @@ class ConfluenceEngine:
         return scores
 
     async def scan_single(self, ticker: str) -> ConfluenceScore | None:
-        """Deep scan a single ticker with detailed signal data."""
-        regime = await self.get_current_regime()
-        signals: list[SignalResult] = []
+        """
+        Deep scan a single ticker with detailed signal data.
 
-        for processor in self._signal_processors:
+        All processors run in parallel for this single ticker.
+        """
+        regime = await self.get_current_regime()
+
+        async def _run_single(processor: SignalProcessor) -> SignalResult | None:
+            """Run a single processor scan for one ticker."""
             try:
-                result = await processor.scan_single(ticker)
-                if result:
-                    signals.append(result)
+                return await processor.scan_single(ticker)
             except Exception as e:
-                print(f"Warning: {processor.name} failed for {ticker}: {e}")
-                continue
+                print(f"Warning: {processor.name} agent failed for {ticker}: {e}")
+                return None
+
+        # Fire all processors simultaneously
+        results = await asyncio.gather(
+            *[_run_single(p) for p in self._signal_processors]
+        )
+
+        signals = [r for r in results if r is not None]
 
         if not signals:
             return None

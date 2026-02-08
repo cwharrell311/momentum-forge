@@ -55,14 +55,19 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logger.info("Confluence Engine starting up...")
 
-    # Initialize shared dependencies (FMP client, Alpaca client, processors, engine)
+    # Initialize shared dependencies (FMP, UW, Alpaca clients + all 8 processors)
     init_app(
         fmp_api_key=settings.fmp_api_key,
+        uw_api_key=settings.uw_api_key,
         alpaca_key=settings.alpaca_api_key,
         alpaca_secret=settings.alpaca_secret_key,
         alpaca_base_url=settings.alpaca_base_url,
     )
     logger.info(f"FMP client initialized (key: ...{settings.fmp_api_key[-4:]})")
+    if settings.uw_api_key:
+        logger.info("UW client initialized — all 8 signal layers ACTIVE")
+    else:
+        logger.info("UW not configured — 3/8 layers active (add UW_API_KEY for all 8)")
     if settings.alpaca_api_key:
         logger.info(f"Alpaca client initialized ({'paper' if 'paper' in settings.alpaca_base_url else 'LIVE'} trading)")
     else:
@@ -102,7 +107,7 @@ app = FastAPI(
         "Identifies high-probability setups by detecting when multiple independent "
         "signal layers align on the same ticker."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -142,4 +147,4 @@ async def dashboard():
 @app.get("/health", tags=["system"])
 async def health():
     """Basic health check — returns OK if the server is running."""
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.3.0"}

@@ -79,6 +79,14 @@ class SignalProcessor(ABC):
     Processors must be independent — they don't import from each other.
     """
 
+    @staticmethod
+    def _safe_float(val) -> float:
+        """Safely convert any value to float. Returns 0.0 on failure."""
+        try:
+            return float(val) if val is not None else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
     @abstractmethod
     async def scan(self, tickers: list[str]) -> list[SignalResult]:
         """
