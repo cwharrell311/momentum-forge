@@ -2,21 +2,21 @@
 Shared application dependencies.
 
 This module holds the singleton instances of the FMP client,
-signal processors, and confluence engine. They're created once
-at startup (in main.py lifespan) and shared across all routes.
+signal processors, confluence engine, and result cache. They're
+created once at startup (in main.py lifespan) and shared across
+all routes.
 
 Why singletons? Because:
 1. The FMP client has a rate limiter — one shared instance
    ensures we never exceed the API limit across endpoints.
 2. Creating new HTTP connections for every request is wasteful.
-3. The confluence engine references all processors — it needs
-   to be built once with the full set.
+3. The result cache stores scan results so the dashboard loads
+   instantly without burning API calls.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
+from src.services.cache import ResultCache
 from src.services.confluence import ConfluenceEngine
 from src.signals.base import SignalProcessor
 from src.signals.momentum import MomentumProcessor
@@ -28,6 +28,7 @@ _fmp_client: FMPClient | None = None
 _processors: list[SignalProcessor] = []
 _engine: ConfluenceEngine | None = None
 _vix_processor: VixRegimeProcessor | None = None
+_cache: ResultCache = ResultCache()
 
 
 def init_app(fmp_api_key: str) -> None:
@@ -78,6 +79,11 @@ def get_vix_processor() -> VixRegimeProcessor | None:
     return _vix_processor
 
 
+def get_cache() -> ResultCache:
+    """Get the shared result cache."""
+    return _cache
+
+
 async def get_watchlist_tickers() -> list[str]:
     """
     Load active watchlist tickers from the database.
@@ -86,6 +92,8 @@ async def get_watchlist_tickers() -> list[str]:
     (e.g., during initial setup before migrations are run).
     """
     try:
+        from sqlalchemy import select
+
         from src.models.tables import Watchlist
         from src.utils.db import get_session
 

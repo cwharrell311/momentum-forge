@@ -6,9 +6,11 @@ Uses APScheduler which runs inside the same Python process as
 the FastAPI server — no extra services needed.
 
 How it works:
-1. On startup, the scheduler registers a job: "run scan_watchlist every N seconds"
-2. Every N seconds, it loads the watchlist, scans all tickers, and stores results
-3. When you hit GET /confluence, you get the latest cached scores
+1. On startup, the scheduler registers a job: "run scan every N seconds"
+2. Every N seconds, it loads the watchlist, scans all tickers, and
+   stores results in the cache
+3. When you open the dashboard, it reads from the cache instantly
+   (zero API calls for page loads)
 """
 
 from __future__ import annotations
@@ -32,16 +34,25 @@ async def run_confluence_scan() -> None:
     1. Loads the active watchlist
     2. Runs all signal processors
     3. Computes confluence scores
-    4. Logs results (DB persistence comes in a later step)
+    4. Stores results in the cache for instant dashboard access
     """
-    from src.api.dependencies import get_engine, get_watchlist_tickers
+    from src.api.dependencies import get_cache, get_engine, get_watchlist_tickers
 
     try:
         tickers = await get_watchlist_tickers()
         engine = get_engine()
+        cache = get_cache()
 
         logger.info(f"Scanning {len(tickers)} tickers...")
         scores = await engine.scan_all(tickers)
+        regime = await engine.get_current_regime()
+
+        # Store results in cache — dashboard reads from here
+        cache.update(
+            scores=scores,
+            regime=regime,
+            scanned_tickers=len(tickers),
+        )
 
         # Log top results
         if scores:
@@ -56,7 +67,7 @@ async def run_confluence_scan() -> None:
 
         logger.info(
             f"Scan complete: {len(scores)} tickers with signals "
-            f"(out of {len(tickers)} scanned)"
+            f"(out of {len(tickers)} scanned) — cached."
         )
 
     except Exception as e:
@@ -68,7 +79,7 @@ def start_scheduler(interval_seconds: int = 300) -> AsyncIOScheduler:
     Start the background scheduler.
 
     Args:
-        interval_seconds: How often to run the full scan (default 5 min)
+        interval_seconds: How often to run the full scan
     """
     global _scheduler
 

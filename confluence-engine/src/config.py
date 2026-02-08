@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ── Application ──
     live_trading_enabled: bool = False
     log_level: str = "INFO"
-    scan_interval: int = 300  # seconds between full scans
+    scan_interval: int = 900  # seconds between full scans (15 min saves API quota)
 
     @property
     def sync_database_url(self) -> str:

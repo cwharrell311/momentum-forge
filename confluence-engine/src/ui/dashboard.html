@@ -24,7 +24,13 @@
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .detail-panel { max-height: 0; overflow: hidden; transition: max-height 0.3s ease, padding 0.3s ease; }
-        .detail-panel.open { max-height: 500px; padding: 16px 0; }
+        .detail-panel.open { max-height: 600px; padding: 16px 0; }
+        .cache-fresh { color: #4ade80; }
+        .cache-stale { color: #fcd34d; }
+        .cache-old { color: #f87171; }
+        .change-up { color: #4ade80; }
+        .change-down { color: #f87171; }
+        .change-flat { color: #94a3b8; }
     </style>
 </head>
 <body class="min-h-screen">
@@ -39,9 +45,13 @@
                 <div id="regime-badge" class="regime-unknown px-4 py-2 rounded-lg font-semibold text-sm">
                     Loading regime...
                 </div>
-                <div class="text-right text-xs text-slate-500">
-                    <div>Last scan</div>
-                    <div id="last-scan" class="text-slate-400">—</div>
+                <div class="text-right text-xs">
+                    <div class="text-slate-500">Cache age</div>
+                    <div id="cache-age" class="text-slate-400 font-mono">—</div>
+                </div>
+                <div class="text-right text-xs">
+                    <div class="text-slate-500">Next scan</div>
+                    <div id="next-scan" class="text-slate-400 font-mono">—</div>
                 </div>
             </div>
         </div>
@@ -51,7 +61,7 @@
     <main class="max-w-6xl mx-auto px-6 py-6">
 
         <!-- Stats Bar -->
-        <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <div class="text-xs text-slate-400 uppercase tracking-wide">Tickers Scanned</div>
                 <div id="stat-scanned" class="text-2xl font-bold text-white mt-1">—</div>
@@ -80,24 +90,27 @@
         <!-- Empty State -->
         <div id="empty-state" class="text-center py-20 hidden">
             <p class="text-slate-400 text-lg">No signals firing right now</p>
-            <p class="text-slate-500 text-sm mt-2">The scanner checks every 5 minutes. If markets are closed, data may be stale.</p>
+            <p class="text-slate-500 text-sm mt-2">The scanner checks every 15 minutes. If markets are closed, data may be stale.</p>
         </div>
 
         <!-- Confluence Table -->
         <div id="confluence-table" class="hidden">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-semibold text-white">Confluence Screener</h2>
-                <button onclick="refreshData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-md text-slate-300 transition">
-                    Refresh Now
-                </button>
+                <div class="flex items-center gap-3">
+                    <span id="market-status" class="text-xs text-slate-500"></span>
+                    <button onclick="refreshData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-md text-slate-300 transition">
+                        Refresh Now
+                    </button>
+                </div>
             </div>
 
             <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
                 <!-- Table Header -->
                 <div class="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-medium text-slate-400 uppercase tracking-wide border-b border-slate-700">
                     <div class="col-span-1">#</div>
-                    <div class="col-span-2">Ticker</div>
-                    <div class="col-span-2">Direction</div>
+                    <div class="col-span-3">Ticker</div>
+                    <div class="col-span-1">Dir</div>
                     <div class="col-span-3">Conviction</div>
                     <div class="col-span-2">Layers</div>
                     <div class="col-span-2">Signals</div>
@@ -111,11 +124,58 @@
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-        Confluence Engine v0.1.0 &middot; Phase 1: Momentum + VIX Regime &middot; Auto-refreshes every 30s
+        Confluence Engine v0.1.0 &middot; Phase 1: Momentum + VIX Regime &middot; Scans every 15 min &middot; Dashboard refreshes every 30s
     </footer>
 
     <script>
         const API = '';  // Same origin
+        let lastCacheAge = null;
+
+        // ── Helpers ──
+        function formatCacheAge(seconds) {
+            if (seconds == null || seconds === 0) return 'just now';
+            if (seconds < 60) return `${Math.round(seconds)}s ago`;
+            if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+            return `${Math.round(seconds / 3600)}h ago`;
+        }
+
+        function cacheAgeClass(seconds) {
+            if (seconds == null) return 'text-slate-400';
+            if (seconds < 300) return 'cache-fresh';     // < 5 min
+            if (seconds < 900) return 'cache-stale';     // < 15 min
+            return 'cache-old';                           // > 15 min
+        }
+
+        function formatPrice(price) {
+            if (price == null) return '';
+            return `$${Number(price).toFixed(2)}`;
+        }
+
+        function formatChange(pct) {
+            if (pct == null) return '';
+            const num = Number(pct);
+            const sign = num >= 0 ? '+' : '';
+            return `${sign}${num.toFixed(2)}%`;
+        }
+
+        function changeClass(pct) {
+            if (pct == null) return 'change-flat';
+            return Number(pct) >= 0 ? 'change-up' : 'change-down';
+        }
+
+        // Extract price info from momentum signal metadata
+        function getPriceInfo(score) {
+            const momentum = (score.signals || []).find(s => s.layer === 'momentum');
+            if (momentum && momentum.metadata) {
+                return {
+                    price: momentum.metadata.price,
+                    change_pct: momentum.metadata.change_pct,
+                    sma_50: momentum.metadata.sma_50,
+                    sma_200: momentum.metadata.sma_200,
+                };
+            }
+            return { price: null, change_pct: null, sma_50: null, sma_200: null };
+        }
 
         // ── Fetch Regime ──
         async function fetchRegime() {
@@ -154,8 +214,9 @@
                     topEl.className = `text-2xl font-bold mt-1 ${top.direction === 'bullish' ? 'bullish' : top.direction === 'bearish' ? 'bearish' : 'neutral'}`;
                 }
 
-                // Update timestamp
-                document.getElementById('last-scan').textContent = new Date().toLocaleTimeString();
+                // Update cache age
+                lastCacheAge = data.cache_age_seconds;
+                updateCacheDisplay(data.cache_age_seconds);
 
                 // Render table
                 renderTable(data.scores || []);
@@ -178,6 +239,26 @@
             }
         }
 
+        function updateCacheDisplay(seconds) {
+            const ageEl = document.getElementById('cache-age');
+            ageEl.textContent = formatCacheAge(seconds);
+            ageEl.className = `font-mono ${cacheAgeClass(seconds)}`;
+
+            // Estimate next scan (15 min default)
+            const nextEl = document.getElementById('next-scan');
+            if (seconds != null) {
+                const remaining = Math.max(0, 900 - seconds);
+                nextEl.textContent = formatCacheAge(-remaining).replace(' ago', '');
+                if (remaining <= 0) {
+                    nextEl.textContent = 'any moment';
+                    nextEl.className = 'font-mono cache-fresh pulse';
+                } else {
+                    nextEl.textContent = `~${Math.ceil(remaining / 60)}m`;
+                    nextEl.className = 'font-mono text-slate-400';
+                }
+            }
+        }
+
         // ── Render Confluence Table ──
         function renderTable(scores) {
             const body = document.getElementById('table-body');
@@ -194,22 +275,30 @@
                 if (score.conviction >= 70) convColor = 'text-green-400 font-bold';
                 else if (score.conviction >= 50) convColor = 'text-yellow-400';
 
+                // Get price data from momentum signal
+                const priceInfo = getPriceInfo(score);
+                const priceText = formatPrice(priceInfo.price);
+                const changeText = formatChange(priceInfo.change_pct);
+                const chgClass = changeClass(priceInfo.change_pct);
+
                 // Signal chips
                 const chips = (score.signals || []).map(s => {
                     const chipColor = s.direction === 'bullish' ? 'bg-green-900 text-green-300' : s.direction === 'bearish' ? 'bg-red-900 text-red-300' : 'bg-slate-700 text-slate-300';
                     return `<span class="signal-chip ${chipColor}">${s.layer}</span>`;
                 }).join(' ');
 
-                const rowId = `row-${score.ticker}`;
                 const detailId = `detail-${score.ticker}`;
 
                 const row = document.createElement('div');
                 row.innerHTML = `
                     <div class="ticker-row grid grid-cols-12 gap-2 px-4 py-3 items-center border-b border-slate-700/50 fade-in" onclick="toggleDetail('${detailId}')" style="animation-delay: ${index * 50}ms">
                         <div class="col-span-1 text-slate-500 font-mono text-sm">${index + 1}</div>
-                        <div class="col-span-2 font-bold text-white text-lg">${score.ticker}</div>
-                        <div class="col-span-2 ${dirColor} font-semibold flex items-center gap-2">
-                            <span>${dirArrow}</span> ${score.direction.charAt(0).toUpperCase() + score.direction.slice(1)}
+                        <div class="col-span-3">
+                            <div class="font-bold text-white text-lg">${score.ticker}</div>
+                            ${priceText ? `<div class="text-xs mt-0.5"><span class="text-slate-400">${priceText}</span> <span class="${chgClass} font-medium">${changeText}</span></div>` : ''}
+                        </div>
+                        <div class="col-span-1 ${dirColor} font-semibold text-center">
+                            <span class="text-lg">${dirArrow}</span>
                         </div>
                         <div class="col-span-3">
                             <div class="flex items-center gap-3">
@@ -239,46 +328,79 @@
                 return '<p class="text-slate-500 text-sm">No signal details available</p>';
             }
 
-            return score.signals.map(signal => {
+            // Price summary at top of detail
+            const priceInfo = getPriceInfo(score);
+            let priceSummary = '';
+            if (priceInfo.price) {
+                const chgClass = changeClass(priceInfo.change_pct);
+                priceSummary = `
+                    <div class="bg-slate-900 rounded-lg p-4 mb-3 border border-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Price</div>
+                            <div class="text-white font-bold text-lg">${formatPrice(priceInfo.price)}</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Daily Change</div>
+                            <div class="${chgClass} font-bold text-lg">${formatChange(priceInfo.change_pct)}</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">50-Day SMA</div>
+                            <div class="text-slate-300 font-mono">${priceInfo.sma_50 ? formatPrice(priceInfo.sma_50) : '—'}</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">200-Day SMA</div>
+                            <div class="text-slate-300 font-mono">${priceInfo.sma_200 ? formatPrice(priceInfo.sma_200) : '—'}</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const signalCards = score.signals.map(signal => {
                 const dirColor = signal.direction === 'bullish' ? 'text-green-400' : signal.direction === 'bearish' ? 'text-red-400' : 'text-slate-400';
                 const barColor = signal.direction === 'bullish' ? 'bg-green-500' : signal.direction === 'bearish' ? 'bg-red-500' : 'bg-slate-500';
+                const dirIcon = signal.direction === 'bullish' ? '&#9650;' : signal.direction === 'bearish' ? '&#9660;' : '&#9644;';
 
                 // Extract key metadata
                 let metaItems = [];
                 if (signal.metadata) {
-                    if (signal.metadata.rsi != null) metaItems.push(`RSI: ${Number(signal.metadata.rsi).toFixed(1)}`);
-                    if (signal.metadata.macd_histogram != null) metaItems.push(`MACD Hist: ${Number(signal.metadata.macd_histogram).toFixed(3)}`);
-                    if (signal.metadata.ma_alignment) metaItems.push(`MA: ${signal.metadata.ma_alignment.replace('_', ' ')}`);
-                    if (signal.metadata.relative_volume != null) metaItems.push(`Rel Vol: ${signal.metadata.relative_volume}x`);
-                    if (signal.metadata.price_vs_52w != null) metaItems.push(`52w Range: ${(signal.metadata.price_vs_52w * 100).toFixed(0)}%`);
-                    if (signal.metadata.vix_level != null) metaItems.push(`VIX: ${Number(signal.metadata.vix_level).toFixed(1)}`);
-                    if (signal.metadata.regime) metaItems.push(`Regime: ${signal.metadata.regime}`);
+                    if (signal.metadata.ma_alignment) metaItems.push({ label: 'MA Alignment', value: signal.metadata.ma_alignment.replace(/_/g, ' ') });
+                    if (signal.metadata.relative_volume != null) metaItems.push({ label: 'Rel Volume', value: `${signal.metadata.relative_volume}x` });
+                    if (signal.metadata.price_vs_52w != null) metaItems.push({ label: '52w Range', value: `${(signal.metadata.price_vs_52w * 100).toFixed(0)}%` });
+                    if (signal.metadata.vix_level != null) metaItems.push({ label: 'VIX', value: Number(signal.metadata.vix_level).toFixed(1) });
+                    if (signal.metadata.regime) metaItems.push({ label: 'Regime', value: signal.metadata.regime });
                 }
 
                 return `
                     <div class="bg-slate-800 rounded-lg p-4 mb-2 border border-slate-700">
                         <div class="flex items-center justify-between mb-2">
                             <div class="flex items-center gap-3">
-                                <span class="text-sm font-bold text-white uppercase tracking-wide">${signal.layer.replace('_', ' ')}</span>
-                                <span class="${dirColor} text-sm font-semibold">${signal.direction}</span>
+                                <span class="text-sm font-bold text-white uppercase tracking-wide">${signal.layer.replace(/_/g, ' ')}</span>
+                                <span class="${dirColor} text-sm font-semibold">${dirIcon} ${signal.direction}</span>
                             </div>
                             <div class="flex items-center gap-4 text-xs text-slate-400">
-                                <span>Strength: <span class="text-white">${(signal.strength * 100).toFixed(0)}%</span></span>
-                                <span>Confidence: <span class="text-white">${(signal.confidence * 100).toFixed(0)}%</span></span>
+                                <span>Strength: <span class="text-white font-mono">${(signal.strength * 100).toFixed(0)}%</span></span>
+                                <span>Confidence: <span class="text-white font-mono">${(signal.confidence * 100).toFixed(0)}%</span></span>
                             </div>
                         </div>
                         <div class="w-full bg-slate-700 rounded-full h-1.5 mb-3">
-                            <div class="${barColor} h-1.5 rounded-full" style="width: ${signal.strength * 100}%"></div>
+                            <div class="${barColor} h-1.5 rounded-full transition-all" style="width: ${signal.strength * 100}%"></div>
                         </div>
                         <p class="text-sm text-slate-300">${signal.explanation}</p>
                         ${metaItems.length > 0 ? `
-                            <div class="flex flex-wrap gap-3 mt-3 text-xs text-slate-400">
-                                ${metaItems.map(item => `<span class="bg-slate-700/50 px-2 py-1 rounded">${item}</span>`).join('')}
+                            <div class="flex flex-wrap gap-3 mt-3">
+                                ${metaItems.map(item => `
+                                    <div class="bg-slate-700/50 px-3 py-1.5 rounded text-xs">
+                                        <span class="text-slate-500">${item.label}:</span>
+                                        <span class="text-slate-200 font-medium ml-1">${item.value}</span>
+                                    </div>
+                                `).join('')}
                             </div>
                         ` : ''}
                     </div>
                 `;
             }).join('');
+
+            return priceSummary + signalCards;
         }
 
         // ── Toggle Detail Panel ──
@@ -299,6 +421,14 @@
 
         // Auto-refresh every 30 seconds
         setInterval(refreshData, 30000);
+
+        // Tick cache age counter every second so it feels alive
+        setInterval(() => {
+            if (lastCacheAge != null) {
+                lastCacheAge += 1;
+                updateCacheDisplay(lastCacheAge);
+            }
+        }, 1000);
     </script>
 </body>
 </html>

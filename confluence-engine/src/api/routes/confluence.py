@@ -5,8 +5,15 @@ These are the most important endpoints in the app — they return
 the ranked list of tickers sorted by conviction score. This is
 what you trade from.
 
-GET /api/v1/confluence         → Top confluence scores (the screener)
-GET /api/v1/confluence/{ticker} → Deep dive on a single ticker
+The main GET /confluence endpoint reads from the CACHE, not from
+live API calls. The background scheduler handles scanning on a
+timer and storing results in the cache. This means:
+- Dashboard loads instantly (no waiting for API)
+- Page refreshes don't burn API quota
+- You always see the latest scan results
+
+GET /api/v1/confluence         → Top confluence scores (from cache)
+GET /api/v1/confluence/{ticker} → Deep dive on a single ticker (live scan)
 """
 
 from __future__ import annotations
@@ -18,8 +25,6 @@ router = APIRouter()
 
 
 # ── Response Schemas ──
-# Pydantic models define the exact shape of API responses.
-# This gives you auto-generated docs and type safety.
 
 class SignalResponse(BaseModel):
     layer: str
@@ -44,85 +49,20 @@ class ConfluenceListResponse(BaseModel):
     regime: str
     scores: list[ConfluenceResponse]
     scanned_tickers: int
+    cache_age_seconds: int = 0
 
 
-# ── Endpoints ──
+# ── Helper ──
 
-@router.get("", response_model=ConfluenceListResponse)
-async def get_confluence():
-    """
-    Get ranked confluence scores for all watchlist tickers.
-
-    This is the main screener — it returns tickers sorted by
-    conviction score (highest first). Only tickers with at least
-    one active signal are included.
-    """
-    # Import here to avoid circular imports at module load time
-    from src.api.dependencies import get_engine, get_watchlist_tickers
-
-    engine = get_engine()
-    tickers = await get_watchlist_tickers()
-
-    if not tickers:
-        return ConfluenceListResponse(regime="unknown", scores=[], scanned_tickers=0)
-
-    scores = await engine.scan_all(tickers)
-    regime = await engine.get_current_regime()
-
-    return ConfluenceListResponse(
-        regime=regime.value,
-        scanned_tickers=len(tickers),
-        scores=[
-            ConfluenceResponse(
-                ticker=s.ticker,
-                direction=s.direction.value,
-                conviction=s.conviction_pct,
-                active_layers=s.active_layers,
-                total_layers=s.total_layers,
-                regime=s.regime.value,
-                signals=[
-                    SignalResponse(
-                        layer=sig.layer,
-                        direction=sig.direction.value,
-                        strength=round(sig.strength, 3),
-                        confidence=round(sig.confidence, 3),
-                        explanation=sig.explanation,
-                        metadata=sig.metadata,
-                    )
-                    for sig in s.signals
-                ],
-            )
-            for s in scores
-        ],
-    )
-
-
-@router.get("/{ticker}", response_model=ConfluenceResponse)
-async def get_confluence_ticker(ticker: str):
-    """
-    Deep dive on a single ticker.
-
-    Returns detailed confluence score with all individual signal
-    layer results and their metadata.
-    """
-    from src.api.dependencies import get_engine
-
-    engine = get_engine()
-    score = await engine.scan_single(ticker.upper())
-
-    if not score:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No signals found for {ticker.upper()}",
-        )
-
+def _format_score(s) -> ConfluenceResponse:
+    """Convert a ConfluenceScore object to API response format."""
     return ConfluenceResponse(
-        ticker=score.ticker,
-        direction=score.direction.value,
-        conviction=score.conviction_pct,
-        active_layers=score.active_layers,
-        total_layers=score.total_layers,
-        regime=score.regime.value,
+        ticker=s.ticker,
+        direction=s.direction.value,
+        conviction=s.conviction_pct,
+        active_layers=s.active_layers,
+        total_layers=s.total_layers,
+        regime=s.regime.value,
         signals=[
             SignalResponse(
                 layer=sig.layer,
@@ -132,6 +72,70 @@ async def get_confluence_ticker(ticker: str):
                 explanation=sig.explanation,
                 metadata=sig.metadata,
             )
-            for sig in score.signals
+            for sig in s.signals
         ],
     )
+
+
+# ── Endpoints ──
+
+@router.get("", response_model=ConfluenceListResponse)
+async def get_confluence():
+    """
+    Get ranked confluence scores for all watchlist tickers.
+
+    Reads from the cache (populated by the background scheduler).
+    Zero API calls — loads instantly.
+    """
+    from src.api.dependencies import get_cache
+
+    cache = get_cache()
+    result = cache.latest()
+
+    if not result:
+        return ConfluenceListResponse(
+            regime="unknown",
+            scores=[],
+            scanned_tickers=0,
+            cache_age_seconds=0,
+        )
+
+    return ConfluenceListResponse(
+        regime=result.regime.value,
+        scanned_tickers=result.scanned_tickers,
+        cache_age_seconds=int(cache.age_seconds),
+        scores=[_format_score(s) for s in result.scores],
+    )
+
+
+@router.get("/{ticker}", response_model=ConfluenceResponse)
+async def get_confluence_ticker(ticker: str):
+    """
+    Deep dive on a single ticker.
+
+    First checks the cache. If not found, does a live scan
+    (costs API calls but only for one ticker).
+    """
+    from src.api.dependencies import get_cache, get_engine
+
+    ticker = ticker.upper()
+
+    # Try cache first
+    cache = get_cache()
+    result = cache.latest()
+    if result:
+        for s in result.scores:
+            if s.ticker == ticker:
+                return _format_score(s)
+
+    # Cache miss — do a live scan for this one ticker
+    engine = get_engine()
+    score = await engine.scan_single(ticker)
+
+    if not score:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No signals found for {ticker}",
+        )
+
+    return _format_score(score)
