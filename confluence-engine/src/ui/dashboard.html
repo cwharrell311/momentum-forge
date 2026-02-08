@@ -31,6 +31,13 @@
         .change-up { color: #4ade80; }
         .change-down { color: #f87171; }
         .change-flat { color: #94a3b8; }
+        .tab-active { color: #e2e8f0; border-color: #3b82f6; }
+        .tab-inactive { color: #64748b; border-color: transparent; }
+        .tab-inactive:hover { color: #94a3b8; }
+        .modal-backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+        .alert-glow { box-shadow: 0 0 20px rgba(74,222,128,0.15); }
+        .alert-slide-in { animation: slideDown 0.4s ease-out; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body class="min-h-screen">
@@ -47,37 +54,57 @@
                 </div>
                 <div class="text-right text-xs">
                     <div class="text-slate-500">Cache age</div>
-                    <div id="cache-age" class="text-slate-400 font-mono">—</div>
+                    <div id="cache-age" class="text-slate-400 font-mono">&mdash;</div>
                 </div>
                 <div class="text-right text-xs">
                     <div class="text-slate-500">Next scan</div>
-                    <div id="next-scan" class="text-slate-400 font-mono">—</div>
+                    <div id="next-scan" class="text-slate-400 font-mono">&mdash;</div>
                 </div>
             </div>
         </div>
     </header>
 
+    <!-- Alerts Banner -->
+    <div id="alerts-banner" class="hidden max-w-6xl mx-auto px-6 mt-4"></div>
+
     <!-- Main Content -->
     <main class="max-w-6xl mx-auto px-6 py-6">
 
         <!-- Stats Bar -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <div class="text-xs text-slate-400 uppercase tracking-wide">Tickers Scanned</div>
-                <div id="stat-scanned" class="text-2xl font-bold text-white mt-1">—</div>
+                <div id="stat-scanned" class="text-2xl font-bold text-white mt-1">&mdash;</div>
             </div>
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <div class="text-xs text-slate-400 uppercase tracking-wide">Signals Firing</div>
-                <div id="stat-firing" class="text-2xl font-bold text-white mt-1">—</div>
+                <div id="stat-firing" class="text-2xl font-bold text-white mt-1">&mdash;</div>
             </div>
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <div class="text-xs text-slate-400 uppercase tracking-wide">Top Conviction</div>
-                <div id="stat-top" class="text-2xl font-bold mt-1">—</div>
+                <div id="stat-top" class="text-2xl font-bold mt-1">&mdash;</div>
             </div>
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <div class="text-xs text-slate-400 uppercase tracking-wide">Active Layers</div>
                 <div id="stat-layers" class="text-2xl font-bold text-white mt-1">2 / 8</div>
             </div>
+            <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                <div class="text-xs text-slate-400 uppercase tracking-wide">Open Trades</div>
+                <div id="stat-open-trades" class="text-2xl font-bold text-blue-400 mt-1">&mdash;</div>
+            </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="flex gap-6 mb-6 border-b border-slate-700">
+            <button onclick="switchTab('screener')" id="tab-screener" class="tab-active pb-3 border-b-2 text-sm font-semibold transition">
+                Confluence Screener
+            </button>
+            <button onclick="switchTab('journal')" id="tab-journal" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+                Trade Journal
+            </button>
+            <button onclick="switchTab('performance')" id="tab-performance" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+                Performance
+            </button>
         </div>
 
         <!-- Loading State -->
@@ -93,34 +120,218 @@
             <p class="text-slate-500 text-sm mt-2">The scanner checks every 15 minutes. If markets are closed, data may be stale.</p>
         </div>
 
-        <!-- Confluence Table -->
-        <div id="confluence-table" class="hidden">
+        <!-- ═══ SCREENER TAB ═══ -->
+        <div id="panel-screener">
+            <div id="confluence-table" class="hidden">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-white">Ranked by Conviction</h2>
+                    <div class="flex items-center gap-3">
+                        <span id="market-status" class="text-xs text-slate-500"></span>
+                        <button onclick="refreshData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-md text-slate-300 transition">
+                            Refresh Now
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                    <div class="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-medium text-slate-400 uppercase tracking-wide border-b border-slate-700">
+                        <div class="col-span-1">#</div>
+                        <div class="col-span-3">Ticker</div>
+                        <div class="col-span-1">Dir</div>
+                        <div class="col-span-3">Conviction</div>
+                        <div class="col-span-2">Layers</div>
+                        <div class="col-span-2">Action</div>
+                    </div>
+                    <div id="table-body"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ JOURNAL TAB ═══ -->
+        <div id="panel-journal" class="hidden">
             <div class="flex items-center justify-between mb-4">
-                <h2 class="text-lg font-semibold text-white">Confluence Screener</h2>
+                <h2 class="text-lg font-semibold text-white">Trade Journal</h2>
                 <div class="flex items-center gap-3">
-                    <span id="market-status" class="text-xs text-slate-500"></span>
-                    <button onclick="refreshData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-md text-slate-300 transition">
-                        Refresh Now
-                    </button>
+                    <select id="journal-filter" onchange="loadTrades()" class="text-xs bg-slate-700 border border-slate-600 px-3 py-1.5 rounded-md text-slate-300">
+                        <option value="">All Trades</option>
+                        <option value="open">Open Only</option>
+                        <option value="closed">Closed Only</option>
+                    </select>
                 </div>
             </div>
 
-            <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                <!-- Table Header -->
-                <div class="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-medium text-slate-400 uppercase tracking-wide border-b border-slate-700">
-                    <div class="col-span-1">#</div>
-                    <div class="col-span-3">Ticker</div>
-                    <div class="col-span-1">Dir</div>
-                    <div class="col-span-3">Conviction</div>
-                    <div class="col-span-2">Layers</div>
-                    <div class="col-span-2">Signals</div>
+            <div id="journal-empty" class="text-center py-16 hidden">
+                <p class="text-slate-400 text-lg">No trades yet</p>
+                <p class="text-slate-500 text-sm mt-2">Click "Log Trade" on a ticker in the Screener to get started.</p>
+                <p class="text-slate-600 text-xs mt-4">Requires PostgreSQL (docker compose up -d)</p>
+            </div>
+
+            <div id="journal-error" class="text-center py-16 hidden">
+                <p class="text-amber-400 text-lg">Database not connected</p>
+                <p class="text-slate-500 text-sm mt-2">The trade journal needs PostgreSQL. Run <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">docker compose up -d</code> to start it.</p>
+            </div>
+
+            <div id="journal-table" class="hidden">
+                <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                    <div class="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-medium text-slate-400 uppercase tracking-wide border-b border-slate-700">
+                        <div class="col-span-2">Ticker</div>
+                        <div class="col-span-2">Side / Type</div>
+                        <div class="col-span-2">Entry</div>
+                        <div class="col-span-2">Exit</div>
+                        <div class="col-span-2">P&L</div>
+                        <div class="col-span-2">Action</div>
+                    </div>
+                    <div id="journal-body"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ PERFORMANCE TAB ═══ -->
+        <div id="panel-performance" class="hidden">
+            <div id="perf-error" class="text-center py-16 hidden">
+                <p class="text-amber-400 text-lg">Database not connected</p>
+                <p class="text-slate-500 text-sm mt-2">Performance stats need PostgreSQL. Run <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">docker compose up -d</code> to start it.</p>
+            </div>
+
+            <div id="perf-empty" class="text-center py-16 hidden">
+                <p class="text-slate-400 text-lg">No closed trades yet</p>
+                <p class="text-slate-500 text-sm mt-2">Close some trades to see your performance stats.</p>
+            </div>
+
+            <div id="perf-content" class="hidden">
+                <h2 class="text-lg font-semibold text-white mb-4">Performance Dashboard</h2>
+
+                <!-- P&L Stats Cards -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Total P&L</div>
+                        <div id="perf-pnl" class="text-3xl font-bold mt-2">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Win Rate</div>
+                        <div id="perf-winrate" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Win</div>
+                        <div id="perf-avgwin" class="text-3xl font-bold change-up mt-2">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Loss</div>
+                        <div id="perf-avgloss" class="text-3xl font-bold change-down mt-2">&mdash;</div>
+                    </div>
                 </div>
 
-                <!-- Table Body -->
-                <div id="table-body"></div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase">Total Trades</div>
+                        <div id="perf-total" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase">Wins / Losses</div>
+                        <div id="perf-wl" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase">Best Trade</div>
+                        <div id="perf-best" class="text-xl font-bold change-up mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase">Worst Trade</div>
+                        <div id="perf-worst" class="text-xl font-bold change-down mt-1">&mdash;</div>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
+
+    <!-- ═══ TRADE ENTRY MODAL ═══ -->
+    <div id="trade-modal" class="fixed inset-0 modal-backdrop z-50 hidden flex items-center justify-center">
+        <div class="bg-slate-800 rounded-2xl border border-slate-600 p-6 w-full max-w-md shadow-2xl fade-in">
+            <div class="flex items-center justify-between mb-5">
+                <h3 class="text-lg font-bold text-white">Log Trade</h3>
+                <button onclick="closeTradeModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs text-slate-400 uppercase mb-1">Ticker</label>
+                    <input id="trade-ticker" type="text" readonly class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white font-bold text-lg">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 uppercase mb-1">Side</label>
+                        <select id="trade-side" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white">
+                            <option value="long">Long</option>
+                            <option value="short">Short</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 uppercase mb-1">Instrument</label>
+                        <select id="trade-instrument" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white">
+                            <option value="equity">Equity</option>
+                            <option value="call">Call Option</option>
+                            <option value="put">Put Option</option>
+                            <option value="spread">Spread</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 uppercase mb-1">Entry Price</label>
+                        <input id="trade-price" type="number" step="0.01" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 uppercase mb-1">Quantity</label>
+                        <input id="trade-qty" type="number" value="1" min="1" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white font-mono">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-slate-400 uppercase mb-1">Notes (optional)</label>
+                    <textarea id="trade-notes" rows="2" placeholder="Why did you take this trade?" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-sm resize-none"></textarea>
+                </div>
+
+                <div id="trade-conviction-badge" class="bg-slate-900 rounded-lg p-3 border border-slate-700 text-sm text-slate-400"></div>
+
+                <div id="trade-error" class="hidden text-red-400 text-sm bg-red-900/20 rounded-lg p-3"></div>
+
+                <button onclick="submitTrade()" id="trade-submit-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-lg transition text-sm">
+                    Log Trade Entry
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ CLOSE TRADE MODAL ═══ -->
+    <div id="close-modal" class="fixed inset-0 modal-backdrop z-50 hidden flex items-center justify-center">
+        <div class="bg-slate-800 rounded-2xl border border-slate-600 p-6 w-full max-w-sm shadow-2xl fade-in">
+            <div class="flex items-center justify-between mb-5">
+                <h3 class="text-lg font-bold text-white">Close Trade</h3>
+                <button onclick="closeCloseModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <div class="space-y-4">
+                <div id="close-trade-info" class="text-sm text-slate-400"></div>
+
+                <div>
+                    <label class="block text-xs text-slate-400 uppercase mb-1">Exit Price</label>
+                    <input id="close-price" type="number" step="0.01" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white font-mono">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-slate-400 uppercase mb-1">Notes (optional)</label>
+                    <textarea id="close-notes" rows="2" placeholder="Why did you exit?" class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-sm resize-none"></textarea>
+                </div>
+
+                <div id="close-error" class="hidden text-red-400 text-sm bg-red-900/20 rounded-lg p-3"></div>
+
+                <button onclick="submitClose()" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3 rounded-lg transition text-sm">
+                    Close Position
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
@@ -128,10 +339,15 @@
     </footer>
 
     <script>
-        const API = '';  // Same origin
+        const API = '';
         let lastCacheAge = null;
+        let currentScores = [];       // Store latest scores for trade modal
+        let closeTradeId = null;      // Track which trade is being closed
 
-        // ── Helpers ──
+        // ═══════════════════════════════════════════════════════
+        // HELPERS
+        // ═══════════════════════════════════════════════════════
+
         function formatCacheAge(seconds) {
             if (seconds == null || seconds === 0) return 'just now';
             if (seconds < 60) return `${Math.round(seconds)}s ago`;
@@ -141,14 +357,20 @@
 
         function cacheAgeClass(seconds) {
             if (seconds == null) return 'text-slate-400';
-            if (seconds < 300) return 'cache-fresh';     // < 5 min
-            if (seconds < 900) return 'cache-stale';     // < 15 min
-            return 'cache-old';                           // > 15 min
+            if (seconds < 300) return 'cache-fresh';
+            if (seconds < 900) return 'cache-stale';
+            return 'cache-old';
         }
 
         function formatPrice(price) {
             if (price == null) return '';
-            return `$${Number(price).toFixed(2)}`;
+            return `$${Number(price).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+
+        function formatPnl(pnl) {
+            if (pnl == null) return '—';
+            const sign = pnl >= 0 ? '+' : '';
+            return `${sign}$${pnl.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
         }
 
         function formatChange(pct) {
@@ -163,7 +385,11 @@
             return Number(pct) >= 0 ? 'change-up' : 'change-down';
         }
 
-        // Extract price info from momentum signal metadata
+        function pnlClass(pnl) {
+            if (pnl == null) return 'text-slate-400';
+            return pnl >= 0 ? 'change-up' : 'change-down';
+        }
+
         function getPriceInfo(score) {
             const momentum = (score.signals || []).find(s => s.layer === 'momentum');
             if (momentum && momentum.metadata) {
@@ -177,33 +403,91 @@
             return { price: null, change_pct: null, sma_50: null, sma_200: null };
         }
 
-        // ── Fetch Regime ──
+        // ═══════════════════════════════════════════════════════
+        // TAB SWITCHING
+        // ═══════════════════════════════════════════════════════
+
+        function switchTab(tab) {
+            ['screener', 'journal', 'performance'].forEach(t => {
+                document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
+                const btn = document.getElementById(`tab-${t}`);
+                btn.className = t === tab
+                    ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
+                    : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
+            });
+
+            // Load data for the selected tab
+            if (tab === 'journal') loadTrades();
+            if (tab === 'performance') loadPerformance();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // ALERTS
+        // ═══════════════════════════════════════════════════════
+
+        function renderAlerts(scores) {
+            const banner = document.getElementById('alerts-banner');
+            const highConviction = (scores || []).filter(s => s.conviction >= 60);
+
+            if (highConviction.length === 0) {
+                banner.classList.add('hidden');
+                return;
+            }
+
+            banner.classList.remove('hidden');
+            banner.innerHTML = highConviction.map(s => {
+                const dirColor = s.direction === 'bullish' ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20';
+                const dirIcon = s.direction === 'bullish' ? '&#9650;' : '&#9660;';
+                const priceInfo = getPriceInfo(s);
+                const priceStr = priceInfo.price ? ` @ ${formatPrice(priceInfo.price)}` : '';
+
+                return `
+                    <div class="alert-slide-in alert-glow border-l-4 ${dirColor} rounded-r-lg px-4 py-3 mb-2 flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <span class="text-lg">${s.conviction >= 70 ? '&#128293;' : '&#9888;&#65039;'}</span>
+                            <div>
+                                <span class="font-bold text-white">${s.ticker}</span>
+                                <span class="${s.direction === 'bullish' ? 'bullish' : 'bearish'} font-semibold ml-2">${dirIcon} ${s.direction} ${s.conviction}%</span>
+                                <span class="text-slate-400 text-sm ml-2">${priceStr}</span>
+                                <span class="text-slate-500 text-sm ml-2">${s.active_layers} layers aligned</span>
+                            </div>
+                        </div>
+                        <button onclick="openTradeModal('${s.ticker}')" class="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-md text-white font-medium transition">
+                            Log Trade
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // FETCH: REGIME
+        // ═══════════════════════════════════════════════════════
+
         async function fetchRegime() {
             try {
                 const resp = await fetch(`${API}/api/v1/regime`);
                 const data = await resp.json();
                 const badge = document.getElementById('regime-badge');
                 const regime = data.regime || 'unknown';
-
                 badge.className = `regime-${regime} px-4 py-2 rounded-lg font-semibold text-sm`;
-
                 let label = regime.toUpperCase();
-                if (data.vix_level) {
-                    label += ` (VIX ${data.vix_level.toFixed(1)})`;
-                }
+                if (data.vix_level) label += ` (VIX ${data.vix_level.toFixed(1)})`;
                 badge.textContent = label;
             } catch (e) {
                 console.error('Regime fetch failed:', e);
             }
         }
 
-        // ── Fetch Confluence Scores ──
+        // ═══════════════════════════════════════════════════════
+        // FETCH: CONFLUENCE SCORES
+        // ═══════════════════════════════════════════════════════
+
         async function fetchConfluence() {
             try {
                 const resp = await fetch(`${API}/api/v1/confluence`);
                 const data = await resp.json();
 
-                // Update stats
                 document.getElementById('stat-scanned').textContent = data.scanned_tickers || 0;
                 document.getElementById('stat-firing').textContent = data.scores?.length || 0;
 
@@ -214,16 +498,15 @@
                     topEl.className = `text-2xl font-bold mt-1 ${top.direction === 'bullish' ? 'bullish' : top.direction === 'bearish' ? 'bearish' : 'neutral'}`;
                 }
 
-                // Update cache age
                 lastCacheAge = data.cache_age_seconds;
                 updateCacheDisplay(data.cache_age_seconds);
 
-                // Render table
-                renderTable(data.scores || []);
+                currentScores = data.scores || [];
+                renderTable(currentScores);
+                renderAlerts(currentScores);
 
-                // Show/hide states
                 document.getElementById('loading').classList.add('hidden');
-                if (data.scores && data.scores.length > 0) {
+                if (currentScores.length > 0) {
                     document.getElementById('confluence-table').classList.remove('hidden');
                     document.getElementById('empty-state').classList.add('hidden');
                 } else {
@@ -244,11 +527,9 @@
             ageEl.textContent = formatCacheAge(seconds);
             ageEl.className = `font-mono ${cacheAgeClass(seconds)}`;
 
-            // Estimate next scan (15 min default)
             const nextEl = document.getElementById('next-scan');
             if (seconds != null) {
                 const remaining = Math.max(0, 900 - seconds);
-                nextEl.textContent = formatCacheAge(-remaining).replace(' ago', '');
                 if (remaining <= 0) {
                     nextEl.textContent = 'any moment';
                     nextEl.className = 'font-mono cache-fresh pulse';
@@ -259,7 +540,10 @@
             }
         }
 
-        // ── Render Confluence Table ──
+        // ═══════════════════════════════════════════════════════
+        // RENDER: CONFLUENCE TABLE
+        // ═══════════════════════════════════════════════════════
+
         function renderTable(scores) {
             const body = document.getElementById('table-body');
             body.innerHTML = '';
@@ -268,51 +552,46 @@
                 const dirColor = score.direction === 'bullish' ? 'bullish' : score.direction === 'bearish' ? 'bearish' : 'neutral';
                 const dirArrow = score.direction === 'bullish' ? '&#9650;' : score.direction === 'bearish' ? '&#9660;' : '&#9644;';
                 const barColor = score.direction === 'bullish' ? 'bg-green-500' : score.direction === 'bearish' ? 'bg-red-500' : 'bg-slate-500';
-                const barBg = 'bg-slate-700';
 
-                // Conviction color
                 let convColor = 'text-slate-300';
                 if (score.conviction >= 70) convColor = 'text-green-400 font-bold';
                 else if (score.conviction >= 50) convColor = 'text-yellow-400';
 
-                // Get price data from momentum signal
                 const priceInfo = getPriceInfo(score);
                 const priceText = formatPrice(priceInfo.price);
                 const changeText = formatChange(priceInfo.change_pct);
                 const chgClass = changeClass(priceInfo.change_pct);
 
-                // Signal chips
-                const chips = (score.signals || []).map(s => {
-                    const chipColor = s.direction === 'bullish' ? 'bg-green-900 text-green-300' : s.direction === 'bearish' ? 'bg-red-900 text-red-300' : 'bg-slate-700 text-slate-300';
-                    return `<span class="signal-chip ${chipColor}">${s.layer}</span>`;
-                }).join(' ');
-
                 const detailId = `detail-${score.ticker}`;
 
                 const row = document.createElement('div');
                 row.innerHTML = `
-                    <div class="ticker-row grid grid-cols-12 gap-2 px-4 py-3 items-center border-b border-slate-700/50 fade-in" onclick="toggleDetail('${detailId}')" style="animation-delay: ${index * 50}ms">
+                    <div class="ticker-row grid grid-cols-12 gap-2 px-4 py-3 items-center border-b border-slate-700/50 fade-in" style="animation-delay: ${index * 50}ms">
                         <div class="col-span-1 text-slate-500 font-mono text-sm">${index + 1}</div>
-                        <div class="col-span-3">
+                        <div class="col-span-3 cursor-pointer" onclick="toggleDetail('${detailId}')">
                             <div class="font-bold text-white text-lg">${score.ticker}</div>
                             ${priceText ? `<div class="text-xs mt-0.5"><span class="text-slate-400">${priceText}</span> <span class="${chgClass} font-medium">${changeText}</span></div>` : ''}
                         </div>
                         <div class="col-span-1 ${dirColor} font-semibold text-center">
                             <span class="text-lg">${dirArrow}</span>
                         </div>
-                        <div class="col-span-3">
+                        <div class="col-span-3 cursor-pointer" onclick="toggleDetail('${detailId}')">
                             <div class="flex items-center gap-3">
-                                <div class="flex-1 ${barBg} rounded-full overflow-hidden">
+                                <div class="flex-1 bg-slate-700 rounded-full overflow-hidden">
                                     <div class="conviction-bar ${barColor}" style="width: ${score.conviction}%"></div>
                                 </div>
                                 <span class="${convColor} text-sm font-mono w-10 text-right">${score.conviction}%</span>
                             </div>
                         </div>
-                        <div class="col-span-2 text-slate-300">
+                        <div class="col-span-2 text-slate-300 cursor-pointer" onclick="toggleDetail('${detailId}')">
                             <span class="font-bold text-white">${score.active_layers}</span>
                             <span class="text-slate-500"> / ${score.total_layers}</span>
                         </div>
-                        <div class="col-span-2 flex flex-wrap gap-1">${chips}</div>
+                        <div class="col-span-2">
+                            <button onclick="openTradeModal('${score.ticker}')" class="text-xs bg-blue-600/80 hover:bg-blue-500 px-3 py-1.5 rounded-md text-white transition">
+                                Log Trade
+                            </button>
+                        </div>
                     </div>
                     <div id="${detailId}" class="detail-panel px-4 bg-slate-850 border-b border-slate-700/50">
                         ${renderDetail(score)}
@@ -322,13 +601,11 @@
             });
         }
 
-        // ── Render Signal Detail Panel ──
         function renderDetail(score) {
             if (!score.signals || score.signals.length === 0) {
                 return '<p class="text-slate-500 text-sm">No signal details available</p>';
             }
 
-            // Price summary at top of detail
             const priceInfo = getPriceInfo(score);
             let priceSummary = '';
             if (priceInfo.price) {
@@ -360,7 +637,6 @@
                 const barColor = signal.direction === 'bullish' ? 'bg-green-500' : signal.direction === 'bearish' ? 'bg-red-500' : 'bg-slate-500';
                 const dirIcon = signal.direction === 'bullish' ? '&#9650;' : signal.direction === 'bearish' ? '&#9660;' : '&#9644;';
 
-                // Extract key metadata
                 let metaItems = [];
                 if (signal.metadata) {
                     if (signal.metadata.ma_alignment) metaItems.push({ label: 'MA Alignment', value: signal.metadata.ma_alignment.replace(/_/g, ' ') });
@@ -403,26 +679,274 @@
             return priceSummary + signalCards;
         }
 
-        // ── Toggle Detail Panel ──
         function toggleDetail(id) {
             const panel = document.getElementById(id);
-            if (panel) {
-                panel.classList.toggle('open');
+            if (panel) panel.classList.toggle('open');
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // TRADE MODAL
+        // ═══════════════════════════════════════════════════════
+
+        function openTradeModal(ticker) {
+            const score = currentScores.find(s => s.ticker === ticker);
+            const priceInfo = score ? getPriceInfo(score) : {};
+
+            document.getElementById('trade-ticker').value = ticker;
+            document.getElementById('trade-price').value = priceInfo.price || '';
+            document.getElementById('trade-side').value = score && score.direction === 'bearish' ? 'short' : 'long';
+            document.getElementById('trade-qty').value = 1;
+            document.getElementById('trade-notes').value = '';
+            document.getElementById('trade-error').classList.add('hidden');
+
+            // Show conviction context
+            const badge = document.getElementById('trade-conviction-badge');
+            if (score) {
+                const dirColor = score.direction === 'bullish' ? 'text-green-400' : 'text-red-400';
+                badge.innerHTML = `Confluence: <span class="${dirColor} font-bold">${score.direction} ${score.conviction}%</span> &mdash; ${score.active_layers} layers aligned`;
+            } else {
+                badge.innerHTML = 'No active confluence signal for this ticker';
+            }
+
+            document.getElementById('trade-modal').classList.remove('hidden');
+        }
+
+        function closeTradeModal() {
+            document.getElementById('trade-modal').classList.add('hidden');
+        }
+
+        async function submitTrade() {
+            const btn = document.getElementById('trade-submit-btn');
+            btn.disabled = true;
+            btn.textContent = 'Logging...';
+
+            const payload = {
+                ticker: document.getElementById('trade-ticker').value,
+                side: document.getElementById('trade-side').value,
+                instrument: document.getElementById('trade-instrument').value,
+                entry_price: parseFloat(document.getElementById('trade-price').value),
+                quantity: parseInt(document.getElementById('trade-qty').value),
+                notes: document.getElementById('trade-notes').value || null,
+            };
+
+            try {
+                const resp = await fetch(`${API}/api/v1/trades`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Failed to log trade');
+                }
+
+                closeTradeModal();
+                loadOpenTradeCount();
+                if (!document.getElementById('panel-journal').classList.contains('hidden')) {
+                    loadTrades();
+                }
+            } catch (e) {
+                const errEl = document.getElementById('trade-error');
+                errEl.textContent = e.message.includes('fetch') ? 'Database not connected. Run: docker compose up -d' : e.message;
+                errEl.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Log Trade Entry';
             }
         }
 
-        // ── Refresh Data ──
+        // ═══════════════════════════════════════════════════════
+        // CLOSE TRADE MODAL
+        // ═══════════════════════════════════════════════════════
+
+        function openCloseModal(tradeId, ticker, side, entryPrice) {
+            closeTradeId = tradeId;
+            document.getElementById('close-trade-info').innerHTML = `
+                Closing <span class="text-white font-bold">${ticker}</span>
+                <span class="text-slate-300">${side}</span> @ entry
+                <span class="text-white font-mono">${formatPrice(entryPrice)}</span>
+            `;
+            document.getElementById('close-price').value = '';
+            document.getElementById('close-notes').value = '';
+            document.getElementById('close-error').classList.add('hidden');
+            document.getElementById('close-modal').classList.remove('hidden');
+        }
+
+        function closeCloseModal() {
+            document.getElementById('close-modal').classList.add('hidden');
+            closeTradeId = null;
+        }
+
+        async function submitClose() {
+            if (!closeTradeId) return;
+
+            const payload = {
+                exit_price: parseFloat(document.getElementById('close-price').value),
+                notes: document.getElementById('close-notes').value || null,
+            };
+
+            try {
+                const resp = await fetch(`${API}/api/v1/trades/${closeTradeId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Failed to close trade');
+                }
+
+                closeCloseModal();
+                loadTrades();
+                loadOpenTradeCount();
+            } catch (e) {
+                const errEl = document.getElementById('close-error');
+                errEl.textContent = e.message;
+                errEl.classList.remove('hidden');
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // TRADE JOURNAL
+        // ═══════════════════════════════════════════════════════
+
+        async function loadTrades() {
+            const filter = document.getElementById('journal-filter').value;
+            const params = filter ? `?status=${filter}` : '';
+
+            try {
+                const resp = await fetch(`${API}/api/v1/trades${params}`);
+                if (!resp.ok) throw new Error('DB error');
+                const trades = await resp.json();
+
+                document.getElementById('journal-error').classList.add('hidden');
+
+                if (trades.length === 0) {
+                    document.getElementById('journal-empty').classList.remove('hidden');
+                    document.getElementById('journal-table').classList.add('hidden');
+                    return;
+                }
+
+                document.getElementById('journal-empty').classList.add('hidden');
+                document.getElementById('journal-table').classList.remove('hidden');
+
+                const body = document.getElementById('journal-body');
+                body.innerHTML = '';
+
+                trades.forEach(t => {
+                    const isOpen = t.status === 'open';
+                    const statusBadge = isOpen
+                        ? '<span class="text-xs bg-blue-900 text-blue-300 px-2 py-0.5 rounded-full">OPEN</span>'
+                        : '<span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">CLOSED</span>';
+
+                    const pnlText = t.pnl != null ? formatPnl(t.pnl) : '—';
+                    const pnlColor = pnlClass(t.pnl);
+                    const pnlPctText = t.pnl_pct != null ? `(${formatChange(t.pnl_pct)})` : '';
+
+                    const row = document.createElement('div');
+                    row.innerHTML = `
+                        <div class="grid grid-cols-12 gap-2 px-4 py-3 items-center border-b border-slate-700/50 hover:bg-slate-750 transition text-sm">
+                            <div class="col-span-2">
+                                <div class="font-bold text-white">${t.ticker}</div>
+                                ${statusBadge}
+                            </div>
+                            <div class="col-span-2 text-slate-300">
+                                <div>${t.side} ${t.instrument}</div>
+                                <div class="text-xs text-slate-500">Qty: ${t.quantity || 1}</div>
+                            </div>
+                            <div class="col-span-2 font-mono text-slate-300">
+                                ${formatPrice(t.entry_price)}
+                                <div class="text-xs text-slate-500">${t.entry_at ? new Date(t.entry_at).toLocaleDateString() : ''}</div>
+                            </div>
+                            <div class="col-span-2 font-mono text-slate-300">
+                                ${t.exit_price ? formatPrice(t.exit_price) : '<span class="text-slate-500">—</span>'}
+                                <div class="text-xs text-slate-500">${t.exit_at ? new Date(t.exit_at).toLocaleDateString() : ''}</div>
+                            </div>
+                            <div class="col-span-2 font-mono font-bold ${pnlColor}">
+                                ${pnlText}
+                                <div class="text-xs font-normal ${pnlColor}">${pnlPctText}</div>
+                            </div>
+                            <div class="col-span-2">
+                                ${isOpen ? `<button onclick="openCloseModal(${t.id}, '${t.ticker}', '${t.side}', ${t.entry_price})" class="text-xs bg-amber-600/80 hover:bg-amber-500 px-3 py-1.5 rounded-md text-white transition">Close</button>` : ''}
+                            </div>
+                        </div>
+                        ${t.notes ? `<div class="px-4 py-2 text-xs text-slate-500 border-b border-slate-700/30 bg-slate-800/50"><span class="text-slate-600">Note:</span> ${t.notes}</div>` : ''}
+                    `;
+                    body.appendChild(row);
+                });
+            } catch (e) {
+                document.getElementById('journal-error').classList.remove('hidden');
+                document.getElementById('journal-empty').classList.add('hidden');
+                document.getElementById('journal-table').classList.add('hidden');
+            }
+        }
+
+        async function loadOpenTradeCount() {
+            try {
+                const resp = await fetch(`${API}/api/v1/trades?status=open`);
+                if (resp.ok) {
+                    const trades = await resp.json();
+                    document.getElementById('stat-open-trades').textContent = trades.length;
+                }
+            } catch (e) {
+                document.getElementById('stat-open-trades').textContent = '—';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // PERFORMANCE
+        // ═══════════════════════════════════════════════════════
+
+        async function loadPerformance() {
+            try {
+                const resp = await fetch(`${API}/api/v1/trades/stats/summary`);
+                if (!resp.ok) throw new Error('DB error');
+                const stats = await resp.json();
+
+                document.getElementById('perf-error').classList.add('hidden');
+
+                if (stats.closed_trades === 0) {
+                    document.getElementById('perf-empty').classList.remove('hidden');
+                    document.getElementById('perf-content').classList.add('hidden');
+                    return;
+                }
+
+                document.getElementById('perf-empty').classList.add('hidden');
+                document.getElementById('perf-content').classList.remove('hidden');
+
+                const pnlEl = document.getElementById('perf-pnl');
+                pnlEl.textContent = formatPnl(stats.total_pnl);
+                pnlEl.className = `text-3xl font-bold mt-2 ${pnlClass(stats.total_pnl)}`;
+
+                document.getElementById('perf-winrate').textContent = `${(stats.win_rate * 100).toFixed(0)}%`;
+                document.getElementById('perf-avgwin').textContent = formatPnl(stats.avg_win);
+                document.getElementById('perf-avgloss').textContent = formatPnl(stats.avg_loss);
+                document.getElementById('perf-total').textContent = stats.total_trades;
+                document.getElementById('perf-wl').textContent = `${stats.win_count}W / ${stats.loss_count}L`;
+                document.getElementById('perf-best').textContent = formatPnl(stats.best_trade);
+                document.getElementById('perf-worst').textContent = formatPnl(stats.worst_trade);
+            } catch (e) {
+                document.getElementById('perf-error').classList.remove('hidden');
+                document.getElementById('perf-empty').classList.add('hidden');
+                document.getElementById('perf-content').classList.add('hidden');
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // INITIALIZATION
+        // ═══════════════════════════════════════════════════════
+
         async function refreshData() {
             await Promise.all([fetchRegime(), fetchConfluence()]);
         }
 
-        // ── Initialize ──
         refreshData();
+        loadOpenTradeCount();
 
-        // Auto-refresh every 30 seconds
         setInterval(refreshData, 30000);
 
-        // Tick cache age counter every second so it feels alive
         setInterval(() => {
             if (lastCacheAge != null) {
                 lastCacheAge += 1;
