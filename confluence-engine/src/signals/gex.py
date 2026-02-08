@@ -31,10 +31,13 @@ Scoring components (max 6 points bull or bear):
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
 from src.utils.data_providers import UnusualWhalesClient
+
+log = logging.getLogger(__name__)
 
 
 class GexProcessor(SignalProcessor):
@@ -70,7 +73,7 @@ class GexProcessor(SignalProcessor):
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"GEX scan failed for {ticker}: {e}")
+                log.warning("GEX scan failed for %s: %s", ticker, e)
                 continue
         return results
 
@@ -124,7 +127,7 @@ class GexProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"GEX analysis failed for {ticker}: {e}")
+            log.error("GEX analysis failed for %s: %s", ticker, e)
             return None
 
     def _analyze_gex(self, ticker: str, data: dict) -> dict:

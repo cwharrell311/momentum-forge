@@ -14,10 +14,13 @@ Regime classification:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.signals.base import Direction, Regime, SignalProcessor, SignalResult
 from src.utils.data_providers import FMPClient
+
+log = logging.getLogger(__name__)
 
 
 class VixRegimeProcessor(SignalProcessor):
@@ -86,7 +89,7 @@ class VixRegimeProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"VIX regime check failed: {e}")
+            log.error("VIX regime check failed: %s", e)
             return None
 
     def _classify_regime(self, vix_level: float) -> Regime:

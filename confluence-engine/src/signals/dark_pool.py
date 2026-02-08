@@ -30,10 +30,13 @@ Scoring components (max 6 points bull or bear):
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
 from src.utils.data_providers import UnusualWhalesClient
+
+log = logging.getLogger(__name__)
 
 
 class DarkPoolProcessor(SignalProcessor):
@@ -69,7 +72,7 @@ class DarkPoolProcessor(SignalProcessor):
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"Dark pool scan failed for {ticker}: {e}")
+                log.warning("Dark pool scan failed for %s: %s", ticker, e)
                 continue
         return results
 
@@ -123,7 +126,7 @@ class DarkPoolProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"Dark pool analysis failed for {ticker}: {e}")
+            log.error("Dark pool analysis failed for %s: %s", ticker, e)
             return None
 
     def _analyze_dark_pool(self, prints: list[dict]) -> dict:

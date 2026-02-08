@@ -16,11 +16,14 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import httpx
 
 from src.utils.rate_limiter import RateLimiter
+
+log = logging.getLogger(__name__)
 
 
 def _today() -> str:
@@ -92,17 +95,17 @@ class FMPClient:
             resp = await self._client.get(url, params=all_params)
             if resp.status_code == 429:
                 self._rate_limited_count += 1
-                print(f"FMP RATE LIMITED (429): {path} — quota likely exhausted")
+                log.warning("FMP rate limited (429): %s — quota likely exhausted", path)
                 return None
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
             self._error_count += 1
-            print(f"FMP API error ({e.response.status_code}): {path}")
+            log.error("FMP API error (%d): %s", e.response.status_code, path)
             return None
         except httpx.RequestError as e:
             self._error_count += 1
-            print(f"FMP request failed: {e}")
+            log.error("FMP request failed: %s", e)
             return None
 
     async def get_quote(self, ticker: str) -> dict | None:
@@ -254,10 +257,10 @@ class AlpacaClient:
                 body = e.response.json().get("message", "")
             except Exception:
                 body = e.response.text[:200]
-            print(f"Alpaca API error ({e.response.status_code}): {path} — {body}")
+            log.error("Alpaca API error (%d): %s — %s", e.response.status_code, path, body)
             return None
         except httpx.RequestError as e:
-            print(f"Alpaca request failed: {e}")
+            log.error("Alpaca request failed: %s", e)
             return None
 
     async def get_account(self) -> dict | None:
@@ -393,17 +396,17 @@ class UnusualWhalesClient:
                 params=params,
             )
             if resp.status_code == 429:
-                print(f"UW RATE LIMITED (429): {path}")
+                log.warning("UW rate limited (429): %s", path)
                 return None
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
             self._error_count += 1
-            print(f"UW API error ({e.response.status_code}): {path}")
+            log.error("UW API error (%d): %s", e.response.status_code, path)
             return None
         except httpx.RequestError as e:
             self._error_count += 1
-            print(f"UW request failed: {e}")
+            log.error("UW request failed: %s", e)
             return None
 
     # ── Options Flow ─────────────────────────────────────────────

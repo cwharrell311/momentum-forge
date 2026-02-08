@@ -26,10 +26,13 @@ Scoring components (max 6 points bull or bear):
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
 from src.utils.data_providers import UnusualWhalesClient
+
+log = logging.getLogger(__name__)
 
 
 class ShortInterestProcessor(SignalProcessor):
@@ -65,7 +68,7 @@ class ShortInterestProcessor(SignalProcessor):
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"Short interest scan failed for {ticker}: {e}")
+                log.warning("Short interest scan failed for %s: %s", ticker, e)
                 continue
         return results
 
@@ -118,7 +121,7 @@ class ShortInterestProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"Short interest analysis failed for {ticker}: {e}")
+            log.error("Short interest analysis failed for %s: %s", ticker, e)
             return None
 
     def _analyze_short_interest(self, data: dict) -> dict:

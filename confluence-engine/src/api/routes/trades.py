@@ -80,22 +80,30 @@ class TradeSummary(BaseModel):
 
 # ── Helpers ──
 
+def _calc_pnl(
+    side: str, entry_price: float, exit_price: float, quantity: int = 1,
+) -> tuple[float, float | None]:
+    """Calculate P&L and P&L % for a closed trade."""
+    pnl = (exit_price - entry_price) * quantity
+    if side != "long":
+        pnl = -pnl
+
+    pnl_pct = None
+    if entry_price > 0:
+        raw_pct = (exit_price - entry_price) / entry_price * 100
+        pnl_pct = round(raw_pct if side == "long" else -raw_pct, 2)
+
+    return round(pnl, 2), pnl_pct
+
+
 def _format_trade(t: Trade) -> TradeResponse:
     """Convert a Trade ORM object to API response."""
     is_closed = t.exit_price is not None
     pnl = t.pnl
     pnl_pct = None
 
-    # Compute P&L if we have entry + exit
     if is_closed and t.entry_price and t.exit_price:
-        if t.side == "long":
-            pnl = (t.exit_price - t.entry_price) * (t.quantity or 1)
-        else:
-            pnl = (t.entry_price - t.exit_price) * (t.quantity or 1)
-
-        if t.entry_price > 0:
-            raw_pct = (t.exit_price - t.entry_price) / t.entry_price * 100
-            pnl_pct = round(raw_pct if t.side == "long" else -raw_pct, 2)
+        pnl, pnl_pct = _calc_pnl(t.side, t.entry_price, t.exit_price, t.quantity or 1)
 
     return TradeResponse(
         id=t.id,
@@ -197,14 +205,10 @@ async def trade_summary():
         closed_trades_list = closed_result.scalars().all()
         closed_count = len(closed_trades_list)
 
-        # Calculate P&L for each closed trade
         pnls = []
         for t in closed_trades_list:
             if t.entry_price and t.exit_price:
-                if t.side == "long":
-                    pnl = (t.exit_price - t.entry_price) * (t.quantity or 1)
-                else:
-                    pnl = (t.entry_price - t.exit_price) * (t.quantity or 1)
+                pnl, _ = _calc_pnl(t.side, t.entry_price, t.exit_price, t.quantity or 1)
                 pnls.append(pnl)
 
         wins = [p for p in pnls if p > 0]
@@ -255,12 +259,10 @@ async def update_trade(trade_id: int, request: TradeUpdateRequest):
                 if request.exit_at
                 else datetime.utcnow()
             )
-            # Calculate P&L
             if trade.entry_price:
-                if trade.side == "long":
-                    trade.pnl = (request.exit_price - trade.entry_price) * (trade.quantity or 1)
-                else:
-                    trade.pnl = (trade.entry_price - request.exit_price) * (trade.quantity or 1)
+                trade.pnl, _ = _calc_pnl(
+                    trade.side, trade.entry_price, request.exit_price, trade.quantity or 1,
+                )
 
         if request.notes is not None:
             trade.notes = request.notes

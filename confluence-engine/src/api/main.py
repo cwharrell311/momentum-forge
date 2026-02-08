@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
     2. Close HTTP clients and DB connections
     """
     settings = get_settings()
-    logger.info("Confluence Engine starting up...")
+    logger.info("Confluence starting up...")
 
     # Initialize shared dependencies (FMP, UW, Alpaca clients + all 8 processors)
     init_app(
@@ -94,14 +94,14 @@ async def lifespan(app: FastAPI):
     yield  # Server is running and handling requests here
 
     # Shutdown
-    logger.info("Confluence Engine shutting down...")
+    logger.info("Confluence shutting down...")
     stop_scheduler()
     await cleanup_app()
     logger.info("Shutdown complete")
 
 
 app = FastAPI(
-    title="Confluence Engine",
+    title="Confluence",
     description=(
         "Multi-layer signal confluence platform for options and equity trading. "
         "Identifies high-probability setups by detecting when multiple independent "

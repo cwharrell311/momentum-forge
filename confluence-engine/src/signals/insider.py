@@ -26,10 +26,13 @@ refresh once per day to conserve API quota.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
 from src.utils.data_providers import FMPClient
+
+log = logging.getLogger(__name__)
 
 # How far back to look for insider transactions
 LOOKBACK_DAYS = 90
@@ -64,7 +67,7 @@ class InsiderProcessor(SignalProcessor):
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"Insider scan failed for {ticker}: {e}")
+                log.warning("Insider scan failed for %s: %s", ticker, e)
                 continue
         return results
 
@@ -116,7 +119,7 @@ class InsiderProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"Insider analysis failed for {ticker}: {e}")
+            log.error("Insider analysis failed for %s: %s", ticker, e)
             return None
 
     def _analyze_transactions(self, transactions: list[dict]) -> dict:

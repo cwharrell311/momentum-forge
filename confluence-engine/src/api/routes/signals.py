@@ -10,8 +10,12 @@ GET /api/v1/signals/layer/{layer}  → All signals from one layer
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -59,7 +63,7 @@ async def get_signals_for_ticker(ticker: str):
             # Skip stub processors that aren't built yet
             continue
         except Exception as e:
-            print(f"Signal scan failed ({processor.name}) for {ticker}: {e}")
+            log.warning("Signal scan failed (%s) for %s: %s", processor.name, ticker, e)
             continue
 
     return results

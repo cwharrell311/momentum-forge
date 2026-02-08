@@ -26,10 +26,13 @@ Scoring components (max 6 points bull or bear):
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
 from src.utils.data_providers import UnusualWhalesClient
+
+log = logging.getLogger(__name__)
 
 
 # Alert type weights — golden sweeps are the highest conviction signal
@@ -86,7 +89,7 @@ class OptionsFlowProcessor(SignalProcessor):
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"Options flow scan failed for {ticker}: {e}")
+                log.warning("Options flow scan failed for %s: %s", ticker, e)
                 continue
         return results
 
@@ -142,7 +145,7 @@ class OptionsFlowProcessor(SignalProcessor):
             )
 
         except Exception as e:
-            print(f"Options flow analysis failed for {ticker}: {e}")
+            log.error("Options flow analysis failed for %s: %s", ticker, e)
             return None
 
     def _analyze_flow(self, alerts: list[dict]) -> dict:

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confluence Engine</title>
+    <title>Confluence</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
@@ -24,7 +24,7 @@
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .detail-panel { max-height: 0; overflow: hidden; transition: max-height 0.3s ease, padding 0.3s ease; }
-        .detail-panel.open { max-height: 600px; padding: 16px 0; }
+        .detail-panel.open { max-height: 3000px; padding: 16px 0; }
         .cache-fresh { color: #4ade80; }
         .cache-stale { color: #fcd34d; }
         .cache-old { color: #f87171; }
@@ -45,8 +45,8 @@
     <header class="border-b border-slate-700 px-6 py-4">
         <div class="max-w-6xl mx-auto flex items-center justify-between">
             <div>
-                <h1 class="text-2xl font-bold text-white tracking-tight">Confluence Engine</h1>
-                <p class="text-sm text-slate-400 mt-1">Multi-layer signal confluence for options & equity trading</p>
+                <h1 class="text-2xl font-bold text-white tracking-tight">Confluence</h1>
+                <p class="text-sm text-slate-400 mt-1">Multi-layer signal confluence for options & equity swing trading</p>
             </div>
             <div class="flex items-center gap-4">
                 <div id="regime-badge" class="regime-unknown px-4 py-2 rounded-lg font-semibold text-sm">
@@ -421,6 +421,34 @@
                     </div>
                 </div>
 
+                <!-- UW Quota -->
+                <div id="uw-quota-section" class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6 hidden">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">Unusual Whales API Quota</h3>
+                    <div class="mb-4">
+                        <div class="flex items-center justify-between text-sm mb-2">
+                            <span class="text-slate-400">Daily Usage</span>
+                            <span id="uw-quota-text" class="text-white font-mono">— / 15,000</span>
+                        </div>
+                        <div class="w-full bg-slate-700 rounded-full h-3 overflow-hidden">
+                            <div id="uw-quota-bar" class="h-3 rounded-full transition-all bg-purple-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Calls Today</div>
+                            <div id="uw-calls" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Remaining</div>
+                            <div id="uw-remaining" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Errors</div>
+                            <div id="uw-errors" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Services Status -->
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
                     <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">Services</h3>
@@ -437,18 +465,21 @@
                             <span class="text-slate-300">Background Scanner</span>
                             <span id="sys-scanner" class="text-sm font-semibold">&mdash;</span>
                         </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-300">Unusual Whales</span>
+                            <span id="sys-uw" class="text-sm font-semibold">&mdash;</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Quota Tips -->
                 <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5">
-                    <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide mb-3">Quota Tips</h3>
+                    <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide mb-3">API Quota Guide</h3>
                     <ul class="text-sm text-slate-500 space-y-2">
                         <li>FMP free tier: <span class="text-slate-300">250 calls/day</span>, resets at midnight UTC</li>
-                        <li>Current setup: <span class="text-slate-300">~16 calls per scan</span> (14 tickers + 2 VIX)</li>
-                        <li>At 15-min intervals: <span class="text-slate-300">~64 calls</span> for an 8-hour trading day</li>
-                        <li>Dashboard page loads: <span class="text-slate-300">0 calls</span> (reads from cache)</li>
-                        <li>Upgrade to FMP Starter ($14/mo) for <span class="text-slate-300">10,000 calls/day</span> + technical indicators</li>
+                        <li>UW Basic tier: <span class="text-slate-300">15,000 calls/day</span>, 120 req/min ($150/mo)</li>
+                        <li>Per scan: <span class="text-slate-300">~3 FMP calls</span> + <span class="text-slate-300">~5 UW calls</span> per ticker</li>
+                        <li>Dashboard loads: <span class="text-slate-300">0 API calls</span> (reads from cache)</li>
                     </ul>
                 </div>
             </div>
@@ -547,7 +578,7 @@
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-        Confluence Engine v0.2.0 &middot; 2 of 8 signal layers active &middot; Scans every 15 min &middot; Dashboard refreshes every 30s
+        Confluence v0.3.0 &middot; 8 signal layers &middot; Scans every 15 min &middot; Dashboard refreshes every 30s
     </footer>
 
     <script>
@@ -821,6 +852,131 @@
             });
         }
 
+        function formatDollar(val) {
+            if (val == null) return '—';
+            const n = Math.abs(Number(val));
+            if (n >= 1e9) return `$${(val / 1e9).toFixed(1)}B`;
+            if (n >= 1e6) return `$${(val / 1e6).toFixed(1)}M`;
+            if (n >= 1e3) return `$${(val / 1e3).toFixed(0)}K`;
+            return `$${Number(val).toFixed(0)}`;
+        }
+
+        function getSignalMeta(signal) {
+            const m = signal.metadata || {};
+            const items = [];
+            const layer = signal.layer;
+
+            // Momentum
+            if (layer === 'momentum') {
+                if (m.ma_alignment) items.push({ label: 'MA Alignment', value: m.ma_alignment.replace(/_/g, ' ') });
+                if (m.ma_cross && m.ma_cross !== 'unknown') {
+                    items.push({ label: '50/200 Cross', value: m.ma_cross.replace(/_/g, ' '), color: m.ma_cross === 'golden_cross' ? 'text-green-400' : 'text-red-400' });
+                }
+                if (m.trend_strength != null) {
+                    items.push({ label: 'Trend', value: `${m.trend_strength > 0 ? '+' : ''}${m.trend_strength.toFixed(1)}%`, color: m.trend_strength >= 0 ? 'text-green-400' : 'text-red-400' });
+                }
+                if (m.relative_volume != null) items.push({ label: 'Rel Volume', value: `${m.relative_volume}x` });
+                if (m.price_vs_52w != null) items.push({ label: '52w Range', value: `${(m.price_vs_52w * 100).toFixed(0)}%` });
+            }
+
+            // VIX Regime
+            if (layer === 'vix_regime') {
+                if (m.vix_level != null) items.push({ label: 'VIX', value: Number(m.vix_level).toFixed(1) });
+                if (m.regime) {
+                    const regColors = { calm: 'text-green-400', elevated: 'text-yellow-400', stressed: 'text-orange-400', crisis: 'text-red-400' };
+                    items.push({ label: 'Regime', value: m.regime.toUpperCase(), color: regColors[m.regime] || 'text-slate-200' });
+                }
+            }
+
+            // Insider
+            if (layer === 'insider') {
+                if (m.buy_count != null) items.push({ label: 'Buys', value: m.buy_count, color: m.buy_count > 0 ? 'text-green-400' : 'text-slate-200' });
+                if (m.sell_count != null) items.push({ label: 'Sells', value: m.sell_count, color: m.sell_count > 3 ? 'text-red-400' : 'text-slate-200' });
+                if (m.unique_buyers >= 2) items.push({ label: 'Unique Buyers', value: m.unique_buyers, color: 'text-green-400' });
+                if (m.c_suite_buys > 0) items.push({ label: 'C-Suite Buys', value: m.c_suite_buys, color: 'text-green-400' });
+                if (m.buy_value >= 1000) items.push({ label: 'Buy Value', value: formatDollar(m.buy_value), color: 'text-green-400' });
+            }
+
+            // Options Flow
+            if (layer === 'options_flow') {
+                if (m.total_alerts != null) items.push({ label: 'Alerts', value: m.total_alerts });
+                if (m.golden_sweeps > 0) items.push({ label: 'Golden Sweeps', value: m.golden_sweeps, color: 'text-yellow-400' });
+                if (m.sweeps > 0) items.push({ label: 'Sweeps', value: m.sweeps });
+                if (m.blocks > 0) items.push({ label: 'Blocks', value: m.blocks });
+                if (m.net_premium != null) {
+                    const bullPrem = m.net_premium >= 0;
+                    items.push({ label: 'Net Premium', value: formatDollar(m.net_premium), color: bullPrem ? 'text-green-400' : 'text-red-400' });
+                }
+                if (m.bullish_premium) items.push({ label: 'Bullish $', value: formatDollar(m.bullish_premium), color: 'text-green-400' });
+                if (m.bearish_premium) items.push({ label: 'Bearish $', value: formatDollar(m.bearish_premium), color: 'text-red-400' });
+                if (m.largest_trade) items.push({ label: 'Largest', value: formatDollar(m.largest_trade) });
+                if (m.avg_vol_oi_ratio != null) items.push({ label: 'Vol/OI', value: m.avg_vol_oi_ratio.toFixed(1) + 'x' });
+                if (m.dominant_expiry) items.push({ label: 'Key Expiry', value: m.dominant_expiry });
+            }
+
+            // GEX
+            if (layer === 'gex') {
+                if (m.gex_regime) {
+                    const gexColors = { positive: 'text-blue-400', negative: 'text-orange-400', neutral: 'text-slate-300' };
+                    items.push({ label: 'GEX Regime', value: m.gex_regime.charAt(0).toUpperCase() + m.gex_regime.slice(1), color: gexColors[m.gex_regime] || 'text-slate-200' });
+                }
+                if (m.net_gex != null) items.push({ label: 'Net GEX', value: formatDollar(m.net_gex) });
+                if (m.gamma_wall != null) items.push({ label: 'Gamma Wall', value: formatPrice(m.gamma_wall), color: 'text-blue-400' });
+                if (m.put_wall != null) items.push({ label: 'Put Wall', value: formatPrice(m.put_wall), color: 'text-orange-400' });
+                if (m.gex_skew != null) items.push({ label: 'Call/Put Skew', value: `${(m.gex_skew * 100).toFixed(0)}%` });
+                if (m.call_gex != null) items.push({ label: 'Call GEX', value: formatDollar(m.call_gex), color: 'text-green-400' });
+                if (m.put_gex != null) items.push({ label: 'Put GEX', value: formatDollar(m.put_gex), color: 'text-red-400' });
+            }
+
+            // Volatility
+            if (layer === 'volatility') {
+                if (m.iv_rank != null) {
+                    const ivColor = m.iv_rank > 75 ? 'text-red-400' : m.iv_rank < 25 ? 'text-green-400' : 'text-slate-200';
+                    items.push({ label: 'IV Rank', value: `${m.iv_rank.toFixed(0)}%`, color: ivColor });
+                }
+                if (m.iv_percentile != null) items.push({ label: 'IV %ile', value: `${m.iv_percentile.toFixed(0)}%` });
+                if (m.current_iv != null) items.push({ label: 'Current IV', value: `${(m.current_iv * 100).toFixed(1)}%` });
+                if (m.put_call_skew != null) {
+                    const skewColor = m.skew_direction === 'put_heavy' ? 'text-red-400' : m.skew_direction === 'call_heavy' ? 'text-green-400' : 'text-slate-200';
+                    items.push({ label: 'P/C Skew', value: m.put_call_skew.toFixed(2), color: skewColor });
+                }
+                if (m.term_structure) items.push({ label: 'Term Structure', value: m.term_structure.replace(/_/g, ' '), color: m.term_structure === 'inverted' ? 'text-red-400' : 'text-slate-200' });
+                if (m.vol_regime) items.push({ label: 'Vol Regime', value: m.vol_regime.replace(/_/g, ' ') });
+                if (m.options_are) items.push({ label: 'Options Are', value: m.options_are.replace(/_/g, ' '), color: m.options_are === 'cheap' ? 'text-green-400' : m.options_are === 'expensive' ? 'text-red-400' : 'text-slate-200' });
+            }
+
+            // Dark Pool
+            if (layer === 'dark_pool') {
+                if (m.dp_vs_avg != null) items.push({ label: 'DP vs Avg', value: `${m.dp_vs_avg.toFixed(1)}x`, color: m.dp_vs_avg > 1.5 ? 'text-blue-400' : 'text-slate-200' });
+                if (m.short_volume_ratio != null) {
+                    const svColor = m.short_volume_ratio > 0.55 ? 'text-red-400' : m.short_volume_ratio < 0.40 ? 'text-green-400' : 'text-slate-200';
+                    items.push({ label: 'Short Vol %', value: `${(m.short_volume_ratio * 100).toFixed(0)}%`, color: svColor });
+                }
+                if (m.block_trades != null) items.push({ label: 'Block Trades', value: m.block_trades });
+                if (m.total_dp_volume != null) items.push({ label: 'DP Volume', value: formatDollar(m.total_dp_volume) });
+                if (m.dp_pct_of_total != null) items.push({ label: 'DP % of Total', value: `${(m.dp_pct_of_total * 100).toFixed(0)}%` });
+                if (m.net_flow != null) items.push({ label: 'Net Flow', value: m.net_flow.replace(/_/g, ' '), color: m.net_flow === 'accumulation' ? 'text-green-400' : m.net_flow === 'distribution' ? 'text-red-400' : 'text-slate-200' });
+                if (m.trend) items.push({ label: 'Trend', value: m.trend.replace(/_/g, ' ') });
+            }
+
+            // Short Interest
+            if (layer === 'short_interest') {
+                if (m.si_pct != null) {
+                    const siColor = m.si_pct > 20 ? 'text-orange-400' : m.si_pct > 10 ? 'text-yellow-400' : 'text-slate-200';
+                    items.push({ label: 'SI %', value: `${m.si_pct.toFixed(1)}%`, color: siColor });
+                }
+                if (m.days_to_cover != null) items.push({ label: 'Days to Cover', value: m.days_to_cover.toFixed(1), color: m.days_to_cover > 5 ? 'text-orange-400' : 'text-slate-200' });
+                if (m.si_change_pct != null) {
+                    const chgColor = m.si_change_pct > 0 ? 'text-red-400' : m.si_change_pct < 0 ? 'text-green-400' : 'text-slate-200';
+                    items.push({ label: 'SI Change', value: `${m.si_change_pct > 0 ? '+' : ''}${m.si_change_pct.toFixed(1)}%`, color: chgColor });
+                }
+                if (m.si_direction) items.push({ label: 'Direction', value: m.si_direction.replace(/_/g, ' ') });
+                if (m.squeeze_score != null && m.squeeze_score > 0.3) items.push({ label: 'Squeeze', value: `${(m.squeeze_score * 100).toFixed(0)}%`, color: 'text-yellow-400' });
+            }
+
+            return items;
+        }
+
         function renderDetail(score) {
             if (!score.signals || score.signals.length === 0) {
                 return '<p class="text-slate-500 text-sm">No signal details available</p>';
@@ -886,31 +1042,7 @@
                 const barColor = signal.direction === 'bullish' ? 'bg-green-500' : signal.direction === 'bearish' ? 'bg-red-500' : 'bg-slate-500';
                 const dirIcon = signal.direction === 'bullish' ? '&#9650;' : signal.direction === 'bearish' ? '&#9660;' : '&#9644;';
 
-                let metaItems = [];
-                if (signal.metadata) {
-                    if (signal.metadata.ma_alignment) metaItems.push({ label: 'MA Alignment', value: signal.metadata.ma_alignment.replace(/_/g, ' ') });
-                    if (signal.metadata.ma_cross && signal.metadata.ma_cross !== 'unknown') {
-                        const crossColor = signal.metadata.ma_cross === 'golden_cross' ? 'text-green-400' : 'text-red-400';
-                        metaItems.push({ label: '50/200 Cross', value: signal.metadata.ma_cross.replace(/_/g, ' '), color: crossColor });
-                    }
-                    if (signal.metadata.trend_strength != null) {
-                        const tsColor = signal.metadata.trend_strength >= 0 ? 'text-green-400' : 'text-red-400';
-                        metaItems.push({ label: 'Trend Strength', value: `${signal.metadata.trend_strength > 0 ? '+' : ''}${signal.metadata.trend_strength.toFixed(1)}%`, color: tsColor });
-                    }
-                    if (signal.metadata.relative_volume != null) metaItems.push({ label: 'Rel Volume', value: `${signal.metadata.relative_volume}x` });
-                    if (signal.metadata.price_vs_52w != null) metaItems.push({ label: '52w Range', value: `${(signal.metadata.price_vs_52w * 100).toFixed(0)}%` });
-                    if (signal.metadata.vix_level != null) metaItems.push({ label: 'VIX', value: Number(signal.metadata.vix_level).toFixed(1) });
-                    if (signal.metadata.regime) metaItems.push({ label: 'Regime', value: signal.metadata.regime });
-                    // Insider-specific metadata
-                    if (signal.metadata.buy_count != null) metaItems.push({ label: 'Insider Buys', value: signal.metadata.buy_count, color: signal.metadata.buy_count > 0 ? 'text-green-400' : 'text-slate-200' });
-                    if (signal.metadata.sell_count != null) metaItems.push({ label: 'Insider Sells', value: signal.metadata.sell_count, color: signal.metadata.sell_count > 3 ? 'text-red-400' : 'text-slate-200' });
-                    if (signal.metadata.unique_buyers != null && signal.metadata.unique_buyers >= 2) metaItems.push({ label: 'Unique Buyers', value: signal.metadata.unique_buyers, color: 'text-green-400' });
-                    if (signal.metadata.c_suite_buys != null && signal.metadata.c_suite_buys > 0) metaItems.push({ label: 'C-Suite Buys', value: signal.metadata.c_suite_buys, color: 'text-green-400' });
-                    if (signal.metadata.buy_value != null && signal.metadata.buy_value >= 1000) {
-                        const bv = signal.metadata.buy_value >= 1000000 ? `$${(signal.metadata.buy_value / 1000000).toFixed(1)}M` : `$${(signal.metadata.buy_value / 1000).toFixed(0)}K`;
-                        metaItems.push({ label: 'Buy Value', value: bv, color: 'text-green-400' });
-                    }
-                }
+                const metaItems = getSignalMeta(signal);
 
                 return `
                     <div class="bg-slate-800 rounded-lg p-4 mb-2 border border-slate-700">
@@ -1336,6 +1468,30 @@
                 document.getElementById('sys-scanner').innerHTML = data.cache_has_data
                     ? '<span class="text-green-400">Running</span>'
                     : '<span class="text-amber-400">Starting up...</span>';
+
+                // UW status
+                const uwEl = document.getElementById('sys-uw');
+                if (data.uw_quota) {
+                    uwEl.innerHTML = `<span class="text-green-400">Connected</span> <span class="text-slate-500 text-xs">(${data.active_layers || '?'}/${data.total_layers || 8} layers)</span>`;
+
+                    // Show UW quota section
+                    const uwSection = document.getElementById('uw-quota-section');
+                    uwSection.classList.remove('hidden');
+                    const uq = data.uw_quota;
+                    document.getElementById('uw-quota-text').textContent = `${uq.calls_today.toLocaleString()} / ${uq.quota_limit.toLocaleString()}`;
+                    const uwBar = document.getElementById('uw-quota-bar');
+                    uwBar.style.width = `${uq.quota_pct_used}%`;
+                    if (uq.quota_pct_used > 80) uwBar.className = 'h-3 rounded-full transition-all bg-red-500';
+                    else if (uq.quota_pct_used > 50) uwBar.className = 'h-3 rounded-full transition-all bg-amber-500';
+                    else uwBar.className = 'h-3 rounded-full transition-all bg-purple-500';
+                    document.getElementById('uw-calls').textContent = uq.calls_today.toLocaleString();
+                    document.getElementById('uw-remaining').textContent = uq.quota_remaining.toLocaleString();
+                    const uwErrEl = document.getElementById('uw-errors');
+                    uwErrEl.textContent = uq.errors_today;
+                    uwErrEl.className = uq.errors_today > 0 ? 'text-xl font-bold change-down mt-1' : 'text-xl font-bold text-white mt-1';
+                } else {
+                    uwEl.innerHTML = '<span class="text-slate-500">Not configured</span>';
+                }
 
                 // Load signal layers
                 loadSignalLayers();

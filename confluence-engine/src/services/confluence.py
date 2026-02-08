@@ -13,7 +13,10 @@ others complete unaffected. The engine scores whatever data is available.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 from src.signals.base import (
     ConfluenceScore,
@@ -119,7 +122,7 @@ class ConfluenceEngine:
             try:
                 return await processor.scan(tickers)
             except Exception as e:
-                print(f"Warning: {processor.name} agent failed: {e}")
+                log.warning("%s agent failed: %s", processor.name, e)
                 return []
 
         # Fire all processors simultaneously — each is an independent agent
@@ -159,7 +162,7 @@ class ConfluenceEngine:
             try:
                 return await processor.scan_single(ticker)
             except Exception as e:
-                print(f"Warning: {processor.name} agent failed for {ticker}: {e}")
+                log.warning("%s agent failed for %s: %s", processor.name, ticker, e)
                 return None
 
         # Fire all processors simultaneously
