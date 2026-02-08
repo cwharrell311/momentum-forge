@@ -79,6 +79,11 @@ def get_vix_processor() -> VixRegimeProcessor | None:
     return _vix_processor
 
 
+def get_fmp_client() -> FMPClient | None:
+    """Get the shared FMP client instance (for quota tracking)."""
+    return _fmp_client
+
+
 def get_cache() -> ResultCache:
     """Get the shared result cache."""
     return _cache

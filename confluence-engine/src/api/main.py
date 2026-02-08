@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from src.api.dependencies import cleanup_app, init_app
-from src.api.routes import confluence, regime, signals, trades, watchlist
+from src.api.routes import confluence, regime, signals, system, trades, watchlist
 from src.config import get_settings
 from src.services.scheduler import start_scheduler, stop_scheduler
 
@@ -113,6 +113,7 @@ app.include_router(signals.router, prefix="/api/v1/signals", tags=["signals"])
 app.include_router(watchlist.router, prefix="/api/v1/watchlist", tags=["watchlist"])
 app.include_router(regime.router, prefix="/api/v1/regime", tags=["regime"])
 app.include_router(trades.router, prefix="/api/v1/trades", tags=["trades"])
+app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
 
 
 # ── Dashboard ──

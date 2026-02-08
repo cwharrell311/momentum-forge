@@ -105,6 +105,12 @@
             <button onclick="switchTab('performance')" id="tab-performance" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 Performance
             </button>
+            <button onclick="switchTab('watchlist')" id="tab-watchlist" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+                Watchlist
+            </button>
+            <button onclick="switchTab('system')" id="tab-system" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+                System
+            </button>
         </div>
 
         <!-- Loading State -->
@@ -238,6 +244,114 @@
                         <div class="text-xs text-slate-400 uppercase">Worst Trade</div>
                         <div id="perf-worst" class="text-xl font-bold change-down mt-1">&mdash;</div>
                     </div>
+                </div>
+            </div>
+        </div>
+        <!-- ═══ WATCHLIST TAB ═══ -->
+        <div id="panel-watchlist" class="hidden">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-white">Manage Watchlist</h2>
+                <div class="text-xs text-slate-500" id="watchlist-count"></div>
+            </div>
+
+            <!-- Add Ticker Form -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-6">
+                <div class="flex gap-3">
+                    <input id="add-ticker-input" type="text" placeholder="Enter ticker (e.g., AAPL)" maxlength="10"
+                        class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white uppercase font-mono"
+                        onkeydown="if(event.key==='Enter') addTicker()">
+                    <input id="add-ticker-sector" type="text" placeholder="Sector (optional)"
+                        class="w-40 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-300 text-sm"
+                        onkeydown="if(event.key==='Enter') addTicker()">
+                    <button onclick="addTicker()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2.5 rounded-lg text-white font-semibold text-sm transition">
+                        Add
+                    </button>
+                </div>
+                <div id="add-ticker-error" class="hidden text-red-400 text-sm mt-2"></div>
+                <div id="add-ticker-success" class="hidden text-green-400 text-sm mt-2"></div>
+            </div>
+
+            <!-- Watchlist Grid -->
+            <div id="watchlist-error" class="text-center py-12 hidden">
+                <p class="text-amber-400 text-lg">Database not connected</p>
+                <p class="text-slate-500 text-sm mt-2">Watchlist management needs PostgreSQL. Run <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">docker compose up -d</code></p>
+                <p class="text-slate-600 text-xs mt-3">Note: The screener still uses the YAML fallback (config/watchlist.yaml)</p>
+            </div>
+
+            <div id="watchlist-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"></div>
+        </div>
+
+        <!-- ═══ SYSTEM TAB ═══ -->
+        <div id="panel-system" class="hidden">
+            <h2 class="text-lg font-semibold text-white mb-4">System Status</h2>
+
+            <div id="system-error" class="text-center py-12 hidden">
+                <p class="text-red-400 text-lg">Cannot reach server</p>
+                <p class="text-slate-500 text-sm mt-2">Make sure uvicorn is running on port 8000</p>
+            </div>
+
+            <div id="system-content" class="hidden">
+                <!-- FMP Quota -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">FMP API Quota</h3>
+                    <div class="mb-4">
+                        <div class="flex items-center justify-between text-sm mb-2">
+                            <span class="text-slate-400">Daily Usage</span>
+                            <span id="quota-text" class="text-white font-mono">— / 250</span>
+                        </div>
+                        <div class="w-full bg-slate-700 rounded-full h-3 overflow-hidden">
+                            <div id="quota-bar" class="h-3 rounded-full transition-all bg-blue-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Calls Today</div>
+                            <div id="sys-calls" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Remaining</div>
+                            <div id="sys-remaining" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Errors</div>
+                            <div id="sys-errors" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 uppercase">Rate Limited</div>
+                            <div id="sys-ratelimited" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Services Status -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">Services</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-300">PostgreSQL Database</span>
+                            <span id="sys-db" class="text-sm font-semibold">&mdash;</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-300">Result Cache</span>
+                            <span id="sys-cache" class="text-sm font-semibold">&mdash;</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-300">Background Scanner</span>
+                            <span id="sys-scanner" class="text-sm font-semibold">&mdash;</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quota Tips -->
+                <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5">
+                    <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide mb-3">Quota Tips</h3>
+                    <ul class="text-sm text-slate-500 space-y-2">
+                        <li>FMP free tier: <span class="text-slate-300">250 calls/day</span>, resets at midnight UTC</li>
+                        <li>Current setup: <span class="text-slate-300">~16 calls per scan</span> (14 tickers + 2 VIX)</li>
+                        <li>At 15-min intervals: <span class="text-slate-300">~64 calls</span> for an 8-hour trading day</li>
+                        <li>Dashboard page loads: <span class="text-slate-300">0 calls</span> (reads from cache)</li>
+                        <li>Upgrade to FMP Starter ($14/mo) for <span class="text-slate-300">10,000 calls/day</span> + technical indicators</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -408,7 +522,7 @@
         // ═══════════════════════════════════════════════════════
 
         function switchTab(tab) {
-            ['screener', 'journal', 'performance'].forEach(t => {
+            ['screener', 'journal', 'performance', 'watchlist', 'system'].forEach(t => {
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
                 const btn = document.getElementById(`tab-${t}`);
                 btn.className = t === tab
@@ -419,6 +533,8 @@
             // Load data for the selected tab
             if (tab === 'journal') loadTrades();
             if (tab === 'performance') loadPerformance();
+            if (tab === 'watchlist') loadWatchlist();
+            if (tab === 'system') loadSystemStatus();
         }
 
         // ═══════════════════════════════════════════════════════
@@ -931,6 +1047,149 @@
                 document.getElementById('perf-error').classList.remove('hidden');
                 document.getElementById('perf-empty').classList.add('hidden');
                 document.getElementById('perf-content').classList.add('hidden');
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // WATCHLIST MANAGEMENT
+        // ═══════════════════════════════════════════════════════
+
+        async function loadWatchlist() {
+            try {
+                const resp = await fetch(`${API}/api/v1/watchlist`);
+                if (!resp.ok) throw new Error('DB error');
+                const tickers = await resp.json();
+
+                document.getElementById('watchlist-error').classList.add('hidden');
+                document.getElementById('watchlist-count').textContent = `${tickers.length} tickers`;
+
+                const grid = document.getElementById('watchlist-grid');
+                grid.innerHTML = '';
+
+                tickers.forEach(t => {
+                    const card = document.createElement('div');
+                    card.className = 'bg-slate-800 rounded-lg border border-slate-700 p-4 flex items-center justify-between group hover:border-slate-500 transition';
+                    card.innerHTML = `
+                        <div>
+                            <div class="font-bold text-white text-lg">${t.ticker}</div>
+                            ${t.sector ? `<div class="text-xs text-slate-500">${t.sector}</div>` : '<div class="text-xs text-slate-600">No sector</div>'}
+                        </div>
+                        <button onclick="removeTicker('${t.ticker}')" class="text-slate-600 hover:text-red-400 transition opacity-0 group-hover:opacity-100 text-lg" title="Remove ${t.ticker}">
+                            &times;
+                        </button>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (e) {
+                document.getElementById('watchlist-error').classList.remove('hidden');
+                document.getElementById('watchlist-grid').innerHTML = '';
+            }
+        }
+
+        async function addTicker() {
+            const input = document.getElementById('add-ticker-input');
+            const sectorInput = document.getElementById('add-ticker-sector');
+            const ticker = input.value.trim().toUpperCase();
+            const errEl = document.getElementById('add-ticker-error');
+            const successEl = document.getElementById('add-ticker-success');
+
+            errEl.classList.add('hidden');
+            successEl.classList.add('hidden');
+
+            if (!ticker) {
+                errEl.textContent = 'Enter a ticker symbol';
+                errEl.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const payload = { ticker };
+                const sector = sectorInput.value.trim();
+                if (sector) payload.sector = sector;
+
+                const resp = await fetch(`${API}/api/v1/watchlist`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Failed to add ticker');
+                }
+
+                input.value = '';
+                sectorInput.value = '';
+                successEl.textContent = `${ticker} added to watchlist`;
+                successEl.classList.remove('hidden');
+                setTimeout(() => successEl.classList.add('hidden'), 3000);
+                loadWatchlist();
+            } catch (e) {
+                errEl.textContent = e.message.includes('fetch') ? 'Database not connected' : e.message;
+                errEl.classList.remove('hidden');
+            }
+        }
+
+        async function removeTicker(ticker) {
+            try {
+                const resp = await fetch(`${API}/api/v1/watchlist/${ticker}`, { method: 'DELETE' });
+                if (!resp.ok && resp.status !== 204) throw new Error('Failed');
+                loadWatchlist();
+            } catch (e) {
+                console.error('Failed to remove ticker:', e);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // SYSTEM STATUS
+        // ═══════════════════════════════════════════════════════
+
+        async function loadSystemStatus() {
+            try {
+                const resp = await fetch(`${API}/api/v1/system/status`);
+                if (!resp.ok) throw new Error('Server error');
+                const data = await resp.json();
+
+                document.getElementById('system-error').classList.add('hidden');
+                document.getElementById('system-content').classList.remove('hidden');
+
+                const q = data.fmp_quota;
+
+                // Quota bar
+                document.getElementById('quota-text').textContent = `${q.calls_today} / ${q.quota_limit}`;
+                const bar = document.getElementById('quota-bar');
+                bar.style.width = `${q.quota_pct_used}%`;
+                if (q.quota_pct_used > 80) bar.className = 'h-3 rounded-full transition-all bg-red-500';
+                else if (q.quota_pct_used > 50) bar.className = 'h-3 rounded-full transition-all bg-amber-500';
+                else bar.className = 'h-3 rounded-full transition-all bg-blue-500';
+
+                // Stats
+                document.getElementById('sys-calls').textContent = q.calls_today;
+                document.getElementById('sys-remaining').textContent = q.quota_remaining;
+                const errEl = document.getElementById('sys-errors');
+                errEl.textContent = q.errors_today;
+                errEl.className = q.errors_today > 0 ? 'text-xl font-bold change-down mt-1' : 'text-xl font-bold text-white mt-1';
+                const rlEl = document.getElementById('sys-ratelimited');
+                rlEl.textContent = q.rate_limited_today;
+                rlEl.className = q.rate_limited_today > 0 ? 'text-xl font-bold change-down mt-1' : 'text-xl font-bold text-white mt-1';
+
+                // Services
+                document.getElementById('sys-db').innerHTML = data.db_connected
+                    ? '<span class="text-green-400">Connected</span>'
+                    : '<span class="text-red-400">Not connected</span>';
+
+                const cacheAge = data.cache_age_seconds;
+                document.getElementById('sys-cache').innerHTML = data.cache_has_data
+                    ? `<span class="text-green-400">Active</span> <span class="text-slate-500 text-xs">(${formatCacheAge(cacheAge)})</span>`
+                    : '<span class="text-amber-400">Empty (waiting for first scan)</span>';
+
+                document.getElementById('sys-scanner').innerHTML = data.cache_has_data
+                    ? '<span class="text-green-400">Running</span>'
+                    : '<span class="text-amber-400">Starting up...</span>';
+
+            } catch (e) {
+                document.getElementById('system-error').classList.remove('hidden');
+                document.getElementById('system-content').classList.add('hidden');
             }
         }
 

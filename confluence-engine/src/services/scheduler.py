@@ -65,6 +65,12 @@ async def run_confluence_scan() -> None:
         else:
             logger.info("  No signals firing")
 
+        # Save to database for historical tracking (non-blocking)
+        try:
+            await _save_scan_history(scores, regime)
+        except Exception as e:
+            logger.debug(f"History save skipped (DB not available): {e}")
+
         logger.info(
             f"Scan complete: {len(scores)} tickers with signals "
             f"(out of {len(tickers)} scanned) — cached."
@@ -97,6 +103,50 @@ def start_scheduler(interval_seconds: int = 300) -> AsyncIOScheduler:
     _scheduler.start()
     logger.info(f"Scheduler started — scanning every {interval_seconds}s")
     return _scheduler
+
+
+async def _save_scan_history(scores, regime) -> None:
+    """
+    Save scan results to the database for historical tracking.
+
+    Each scan creates ConfluenceScoreRecord rows and Signal rows.
+    This builds a history so you can later analyze how signals
+    evolved over time — useful for backtesting and pattern recognition.
+    """
+    from src.models.tables import ConfluenceScoreRecord, Signal
+    from src.utils.db import get_session
+
+    async with get_session() as session:
+        for score in scores:
+            # Save individual signals
+            signal_ids = []
+            for sig in score.signals:
+                signal_row = Signal(
+                    ticker=score.ticker,
+                    layer=sig.layer,
+                    direction=sig.direction.value,
+                    strength=sig.strength,
+                    confidence=sig.confidence,
+                    metadata_=sig.metadata,
+                    explanation=sig.explanation,
+                )
+                session.add(signal_row)
+                await session.flush()
+                signal_ids.append(signal_row.id)
+
+            # Save confluence score
+            score_row = ConfluenceScoreRecord(
+                ticker=score.ticker,
+                direction=score.direction.value,
+                conviction=score.conviction_pct,
+                active_layers=score.active_layers,
+                regime=regime.value if regime else None,
+                signal_ids=signal_ids if signal_ids else None,
+            )
+            session.add(score_row)
+
+        await session.commit()
+        logger.debug(f"Saved {len(scores)} scores to history")
 
 
 def stop_scheduler() -> None:
