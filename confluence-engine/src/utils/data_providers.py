@@ -25,13 +25,13 @@ class FMPClient:
     """
     Financial Modeling Prep API client.
 
-    FMP provides: stock quotes, technical indicators (RSI, MACD, SMA),
-    company profiles, and VIX data. Free tier allows ~250 requests/day.
+    Uses the new /stable/ endpoints (FMP retired the legacy /api/v3/ URLs
+    in August 2025). Free tier allows ~250 requests/day.
 
     Docs: https://site.financialmodelingprep.com/developer/docs
     """
 
-    BASE_URL = "https://financialmodelingprep.com/api/v3"
+    BASE_URL = "https://financialmodelingprep.com/stable"
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -61,7 +61,7 @@ class FMPClient:
 
     async def get_quote(self, ticker: str) -> dict | None:
         """Get current quote (price, volume, change, 52w range)."""
-        data = await self._get(f"quote/{ticker}")
+        data = await self._get("quote", params={"symbol": ticker})
         if isinstance(data, list) and data:
             return data[0]
         return None
@@ -69,8 +69,8 @@ class FMPClient:
     async def get_rsi(self, ticker: str, period: int = 14) -> dict | None:
         """Get RSI technical indicator."""
         data = await self._get(
-            f"technical_indicator/daily/{ticker}",
-            params={"period": period, "type": "rsi"},
+            "technical-indicators/rsi",
+            params={"symbol": ticker, "periodLength": period, "timeframe": "1day"},
         )
         if isinstance(data, list) and data:
             return data[0]
@@ -79,8 +79,8 @@ class FMPClient:
     async def get_macd(self, ticker: str) -> dict | None:
         """Get MACD technical indicator (line, signal, histogram)."""
         data = await self._get(
-            f"technical_indicator/daily/{ticker}",
-            params={"type": "macd"},
+            "technical-indicators/macd",
+            params={"symbol": ticker, "timeframe": "1day"},
         )
         if isinstance(data, list) and data:
             return data[0]
@@ -89,8 +89,8 @@ class FMPClient:
     async def get_sma(self, ticker: str, period: int = 20) -> dict | None:
         """Get Simple Moving Average for a given period."""
         data = await self._get(
-            f"technical_indicator/daily/{ticker}",
-            params={"period": period, "type": "sma"},
+            "technical-indicators/sma",
+            params={"symbol": ticker, "periodLength": period, "timeframe": "1day"},
         )
         if isinstance(data, list) and data:
             return data[0]
@@ -107,14 +107,14 @@ class FMPClient:
 
     async def get_vix_quote(self) -> dict | None:
         """Get current VIX level."""
-        data = await self._get("quote/%5EVIX")
+        data = await self._get("quote", params={"symbol": "^VIX"})
         if isinstance(data, list) and data:
             return data[0]
         return None
 
     async def get_company_profile(self, ticker: str) -> dict | None:
         """Get company profile (sector, market cap, etc.)."""
-        data = await self._get(f"profile/{ticker}")
+        data = await self._get("profile", params={"symbol": ticker})
         if isinstance(data, list) and data:
             return data[0]
         return None
