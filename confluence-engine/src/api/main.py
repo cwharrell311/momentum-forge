@@ -59,6 +59,19 @@ async def lifespan(app: FastAPI):
     init_app(fmp_api_key=settings.fmp_api_key)
     logger.info(f"FMP client initialized (key: ...{settings.fmp_api_key[-4:]})")
 
+    # Create database tables (if PostgreSQL is running)
+    try:
+        from src.utils.db import create_tables
+
+        await create_tables()
+        logger.info("Database tables ready")
+    except Exception as e:
+        logger.warning(
+            f"Database not available: {e} — "
+            "Screener works fine, but Trade Journal needs PostgreSQL. "
+            "Run: docker compose up -d"
+        )
+
     # Start background scanner
     start_scheduler(interval_seconds=settings.scan_interval)
 

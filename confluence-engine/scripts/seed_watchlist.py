@@ -29,6 +29,13 @@ def load_watchlist() -> list[str]:
 
 
 async def seed() -> None:
+    # Create tables first (safe to run multiple times)
+    from src.utils.db import create_tables
+
+    print("Creating database tables (if needed)...")
+    await create_tables()
+    print("Tables ready.\n")
+
     tickers = load_watchlist()
     print(f"Loaded {len(tickers)} tickers from config")
 

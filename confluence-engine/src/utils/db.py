@@ -66,6 +66,22 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         await session.close()
 
 
+async def create_tables() -> None:
+    """
+    Create all database tables if they don't exist.
+
+    Uses the SQLAlchemy models defined in src/models/tables.py.
+    Safe to call multiple times — CREATE TABLE IF NOT EXISTS.
+    """
+    from src.models.base import Base
+
+    # Import tables so they're registered with Base.metadata
+    import src.models.tables  # noqa: F401
+
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 async def close_engine() -> None:
     """Shut down the connection pool. Called on app shutdown."""
     await _engine.dispose()
