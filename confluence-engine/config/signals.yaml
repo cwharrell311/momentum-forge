@@ -1,0 +1,54 @@
+# Signal Layer Weights and Thresholds
+# Adjust these based on backtesting results.
+
+signal_weights:
+  options_flow: 0.25         # Most predictive single layer
+  gex: 0.18                  # Structural/dealer positioning edge
+  dark_pool: 0.15            # Institutional accumulation
+  volatility: 0.12           # IV surface / vol mispricing
+  momentum: 0.12             # Trend confirmation
+  insider: 0.10              # Form 4 cluster buying
+  short_interest: 0.08       # Squeeze setup detection
+  # vix_regime: not weighted — modifies other weights
+
+# Confluence multiplier: bonus when multiple layers agree
+confluence_multiplier:
+  1: 0.80                    # Single layer — discount
+  2: 1.00                    # Baseline
+  3: 1.15                    # Moderate boost
+  4: 1.30                    # Strong boost
+  5: 1.50                    # Max conviction
+
+# Regime modifiers
+regime_modifiers:
+  calm:
+    bullish_mult: 1.10
+    bearish_mult: 0.80
+  elevated:
+    bullish_mult: 1.00
+    bearish_mult: 1.00
+  stressed:
+    bullish_mult: 0.70
+    bearish_mult: 1.30
+  crisis:
+    bullish_mult: 0.40
+    bearish_mult: 1.50
+
+# Alert thresholds
+alerts:
+  high_conviction_threshold: 0.70    # Alert when conviction > 70%
+  flow_spike_premium_min: 1000000    # $1M+ premium = notable flow
+  insider_cluster_window_days: 30    # Cluster = 2+ insiders in 30 days
+  squeeze_short_interest_min: 0.15   # 15%+ SI for squeeze detection
+  squeeze_borrow_cost_min: 20.0      # 20%+ CTB = squeeze fuel
+
+# Refresh intervals (seconds)
+refresh_intervals:
+  options_flow: 120          # 2 minutes
+  gex: 300                   # 5 minutes
+  volatility: 300            # 5 minutes
+  dark_pool: 600             # 10 minutes
+  momentum: 300              # 5 minutes
+  insider: 86400             # Daily
+  short_interest: 3600       # Hourly
+  vix_regime: 900            # 15 minutes

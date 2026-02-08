@@ -1,0 +1,58 @@
+# Default Watchlist
+# Liquid, optionable tickers with active options markets.
+# These are good candidates for confluence scanning.
+# Add/remove via API or by editing this file.
+
+# Mega-cap tech (highest options liquidity)
+tickers:
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOGL
+  - AMZN
+  - META
+  - TSLA
+  - AMD
+  - AVGO
+  - CRM
+
+  # Semiconductors
+  - SMCI
+  - ARM
+  - MRVL
+  - MU
+  - QCOM
+
+  # Growth / Momentum
+  - PLTR
+  - SNOW
+  - NET
+  - CRWD
+  - DDOG
+  - PANW
+
+  # Finance
+  - JPM
+  - GS
+  - V
+  - MA
+
+  # Healthcare
+  - UNH
+  - LLY
+  - MRNA
+
+  # Energy
+  - XOM
+  - CVX
+
+  # ETFs (for broad market signals)
+  - SPY
+  - QQQ
+  - IWM
+  - XLF
+  - XLE
+  - ARKK
+
+  # High short interest / squeeze candidates (update regularly)
+  # Add tickers here as you spot high SI setups
