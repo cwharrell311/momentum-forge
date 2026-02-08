@@ -108,6 +108,9 @@
             <button onclick="switchTab('watchlist')" id="tab-watchlist" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 Watchlist
             </button>
+            <button onclick="switchTab('broker')" id="tab-broker" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+                Broker
+            </button>
             <button onclick="switchTab('system')" id="tab-system" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 System
             </button>
@@ -279,6 +282,91 @@
             </div>
 
             <div id="watchlist-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"></div>
+        </div>
+
+        <!-- ═══ BROKER TAB ═══ -->
+        <div id="panel-broker" class="hidden">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-white">Paper Trading</h2>
+                <div id="broker-mode" class="text-xs text-slate-500"></div>
+            </div>
+
+            <div id="broker-not-configured" class="text-center py-16 hidden">
+                <p class="text-amber-400 text-lg">Alpaca not configured</p>
+                <p class="text-slate-500 text-sm mt-2">Add your free Alpaca paper trading keys to <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">.env</code></p>
+                <div class="mt-4 bg-slate-800 rounded-lg border border-slate-700 p-4 max-w-md mx-auto text-left text-sm text-slate-400 font-mono">
+                    ALPACA_API_KEY=your_key_here<br>
+                    ALPACA_SECRET_KEY=your_secret_here
+                </div>
+                <p class="text-slate-600 text-xs mt-4">Sign up free at <span class="text-blue-400">alpaca.markets</span> &mdash; paper trading is 100% free</p>
+            </div>
+
+            <div id="broker-content" class="hidden">
+                <!-- Account Summary -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Equity</div>
+                        <div id="broker-equity" class="text-2xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Buying Power</div>
+                        <div id="broker-buying-power" class="text-2xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Cash</div>
+                        <div id="broker-cash" class="text-2xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">Status</div>
+                        <div id="broker-status" class="text-2xl font-bold text-white mt-1">&mdash;</div>
+                    </div>
+                </div>
+
+                <!-- Quick Order Form -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">Place Order</h3>
+                    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                        <input id="order-ticker" type="text" placeholder="Ticker" maxlength="10"
+                            class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-white uppercase font-mono text-sm">
+                        <input id="order-qty" type="number" value="1" min="1" placeholder="Qty"
+                            class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-white font-mono text-sm">
+                        <select id="order-side" class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm">
+                            <option value="buy">Buy</option>
+                            <option value="sell">Sell</option>
+                        </select>
+                        <select id="order-type" class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm" onchange="toggleLimitPrice()">
+                            <option value="market">Market</option>
+                            <option value="limit">Limit</option>
+                        </select>
+                        <button onclick="placeOrder()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2.5 rounded-lg text-white font-semibold text-sm transition">
+                            Execute
+                        </button>
+                    </div>
+                    <div id="order-limit-row" class="hidden mt-3">
+                        <input id="order-limit-price" type="number" step="0.01" placeholder="Limit Price"
+                            class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-white font-mono text-sm w-40">
+                    </div>
+                    <div id="order-error" class="hidden text-red-400 text-sm mt-2"></div>
+                    <div id="order-success" class="hidden text-green-400 text-sm mt-2"></div>
+                </div>
+
+                <!-- Positions -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-white uppercase tracking-wide">Open Positions</h3>
+                        <button onclick="loadBrokerData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-slate-300">Refresh</button>
+                    </div>
+                    <div id="positions-empty" class="text-center py-6 text-slate-500 text-sm hidden">No open positions</div>
+                    <div id="positions-grid" class="space-y-2"></div>
+                </div>
+
+                <!-- Open Orders -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wide mb-4">Open Orders</h3>
+                    <div id="orders-empty" class="text-center py-6 text-slate-500 text-sm hidden">No open orders</div>
+                    <div id="orders-grid" class="space-y-2"></div>
+                </div>
+            </div>
         </div>
 
         <!-- ═══ SYSTEM TAB ═══ -->
@@ -537,7 +625,7 @@
         // ═══════════════════════════════════════════════════════
 
         function switchTab(tab) {
-            ['screener', 'journal', 'performance', 'watchlist', 'system'].forEach(t => {
+            ['screener', 'journal', 'performance', 'watchlist', 'broker', 'system'].forEach(t => {
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
                 const btn = document.getElementById(`tab-${t}`);
                 btn.className = t === tab
@@ -549,6 +637,7 @@
             if (tab === 'journal') loadTrades();
             if (tab === 'performance') loadPerformance();
             if (tab === 'watchlist') loadWatchlist();
+            if (tab === 'broker') loadBrokerData();
             if (tab === 'system') loadSystemStatus();
         }
 
@@ -812,6 +901,15 @@
                     if (signal.metadata.price_vs_52w != null) metaItems.push({ label: '52w Range', value: `${(signal.metadata.price_vs_52w * 100).toFixed(0)}%` });
                     if (signal.metadata.vix_level != null) metaItems.push({ label: 'VIX', value: Number(signal.metadata.vix_level).toFixed(1) });
                     if (signal.metadata.regime) metaItems.push({ label: 'Regime', value: signal.metadata.regime });
+                    // Insider-specific metadata
+                    if (signal.metadata.buy_count != null) metaItems.push({ label: 'Insider Buys', value: signal.metadata.buy_count, color: signal.metadata.buy_count > 0 ? 'text-green-400' : 'text-slate-200' });
+                    if (signal.metadata.sell_count != null) metaItems.push({ label: 'Insider Sells', value: signal.metadata.sell_count, color: signal.metadata.sell_count > 3 ? 'text-red-400' : 'text-slate-200' });
+                    if (signal.metadata.unique_buyers != null && signal.metadata.unique_buyers >= 2) metaItems.push({ label: 'Unique Buyers', value: signal.metadata.unique_buyers, color: 'text-green-400' });
+                    if (signal.metadata.c_suite_buys != null && signal.metadata.c_suite_buys > 0) metaItems.push({ label: 'C-Suite Buys', value: signal.metadata.c_suite_buys, color: 'text-green-400' });
+                    if (signal.metadata.buy_value != null && signal.metadata.buy_value >= 1000) {
+                        const bv = signal.metadata.buy_value >= 1000000 ? `$${(signal.metadata.buy_value / 1000000).toFixed(1)}M` : `$${(signal.metadata.buy_value / 1000).toFixed(0)}K`;
+                        metaItems.push({ label: 'Buy Value', value: bv, color: 'text-green-400' });
+                    }
                 }
 
                 return `
@@ -1247,6 +1345,206 @@
                 document.getElementById('system-content').classList.add('hidden');
             }
         }
+
+        // ═══════════════════════════════════════════════════════
+        // BROKER (ALPACA PAPER TRADING)
+        // ═══════════════════════════════════════════════════════
+
+        async function loadBrokerData() {
+            try {
+                const statusResp = await fetch(`${API}/api/v1/broker/status`);
+                if (!statusResp.ok) throw new Error('Server error');
+                const status = await statusResp.json();
+
+                if (!status.configured) {
+                    document.getElementById('broker-not-configured').classList.remove('hidden');
+                    document.getElementById('broker-content').classList.add('hidden');
+                    return;
+                }
+
+                document.getElementById('broker-not-configured').classList.add('hidden');
+                document.getElementById('broker-content').classList.remove('hidden');
+                document.getElementById('broker-mode').innerHTML = status.is_paper
+                    ? '<span class="bg-amber-900/60 text-amber-400 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase">Paper Trading</span>'
+                    : '<span class="bg-red-900/60 text-red-400 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase">Live Trading</span>';
+
+                // Load account, positions, and orders in parallel
+                const [acctResp, posResp, ordResp] = await Promise.all([
+                    fetch(`${API}/api/v1/broker/account`),
+                    fetch(`${API}/api/v1/broker/positions`),
+                    fetch(`${API}/api/v1/broker/orders`),
+                ]);
+
+                if (acctResp.ok) {
+                    const acct = await acctResp.json();
+                    document.getElementById('broker-equity').textContent = formatPrice(acct.equity);
+                    document.getElementById('broker-buying-power').textContent = formatPrice(acct.buying_power);
+                    document.getElementById('broker-cash').textContent = formatPrice(acct.cash);
+                    const statusEl = document.getElementById('broker-status');
+                    statusEl.textContent = acct.status === 'ACTIVE' ? 'Active' : acct.status;
+                    statusEl.className = `text-2xl font-bold mt-1 ${acct.status === 'ACTIVE' ? 'text-green-400' : 'text-amber-400'}`;
+                }
+
+                if (posResp.ok) {
+                    const positions = await posResp.json();
+                    renderPositions(positions);
+                }
+
+                if (ordResp.ok) {
+                    const orders = await ordResp.json();
+                    renderOrders(orders);
+                }
+
+            } catch (e) {
+                console.error('Broker load failed:', e);
+                document.getElementById('broker-not-configured').classList.remove('hidden');
+                document.getElementById('broker-content').classList.add('hidden');
+            }
+        }
+
+        function renderPositions(positions) {
+            const grid = document.getElementById('positions-grid');
+            const empty = document.getElementById('positions-empty');
+
+            if (!positions || positions.length === 0) {
+                empty.classList.remove('hidden');
+                grid.innerHTML = '';
+                return;
+            }
+
+            empty.classList.add('hidden');
+            grid.innerHTML = positions.map(p => {
+                const pnlColor = p.unrealized_pnl >= 0 ? 'change-up' : 'change-down';
+                return `
+                    <div class="flex items-center justify-between bg-slate-900/60 rounded-lg px-4 py-3 border border-slate-700/50">
+                        <div class="flex items-center gap-4">
+                            <div>
+                                <span class="font-bold text-white text-lg">${p.ticker}</span>
+                                <span class="text-xs text-slate-500 ml-2">${p.qty} shares ${p.side}</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-6 text-sm">
+                            <div class="text-right">
+                                <div class="text-xs text-slate-500">Avg Entry</div>
+                                <div class="text-slate-300 font-mono">${formatPrice(p.avg_entry)}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-xs text-slate-500">Current</div>
+                                <div class="text-slate-300 font-mono">${formatPrice(p.current_price)}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-xs text-slate-500">P&L</div>
+                                <div class="${pnlColor} font-bold font-mono">${formatPnl(p.unrealized_pnl)} (${p.unrealized_pnl_pct >= 0 ? '+' : ''}${p.unrealized_pnl_pct.toFixed(2)}%)</div>
+                            </div>
+                            <button onclick="closeBrokerPosition('${p.ticker}')" class="text-xs bg-amber-600/80 hover:bg-amber-500 px-3 py-1.5 rounded-md text-white transition">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderOrders(orders) {
+            const grid = document.getElementById('orders-grid');
+            const empty = document.getElementById('orders-empty');
+
+            if (!orders || orders.length === 0) {
+                empty.classList.remove('hidden');
+                grid.innerHTML = '';
+                return;
+            }
+
+            empty.classList.add('hidden');
+            grid.innerHTML = orders.map(o => `
+                <div class="flex items-center justify-between bg-slate-900/60 rounded-lg px-4 py-3 border border-slate-700/50">
+                    <div class="flex items-center gap-4">
+                        <span class="font-bold text-white">${o.ticker}</span>
+                        <span class="text-xs ${o.side === 'buy' ? 'text-green-400' : 'text-red-400'} uppercase font-semibold">${o.side}</span>
+                        <span class="text-xs text-slate-400">${o.qty} shares</span>
+                        <span class="text-xs text-slate-500">${o.type}${o.limit_price ? ' @ ' + formatPrice(parseFloat(o.limit_price)) : ''}</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs bg-blue-900/60 text-blue-300 px-2 py-0.5 rounded-full">${o.status}</span>
+                        <button onclick="cancelBrokerOrder('${o.order_id}')" class="text-xs bg-red-600/60 hover:bg-red-500 px-3 py-1 rounded text-white transition">Cancel</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function toggleLimitPrice() {
+            const type = document.getElementById('order-type').value;
+            document.getElementById('order-limit-row').classList.toggle('hidden', type !== 'limit');
+        }
+
+        async function placeOrder() {
+            const errEl = document.getElementById('order-error');
+            const successEl = document.getElementById('order-success');
+            errEl.classList.add('hidden');
+            successEl.classList.add('hidden');
+
+            const ticker = document.getElementById('order-ticker').value.trim().toUpperCase();
+            if (!ticker) { errEl.textContent = 'Enter a ticker'; errEl.classList.remove('hidden'); return; }
+
+            const payload = {
+                ticker,
+                qty: parseInt(document.getElementById('order-qty').value),
+                side: document.getElementById('order-side').value,
+                order_type: document.getElementById('order-type').value,
+            };
+
+            if (payload.order_type === 'limit') {
+                payload.limit_price = parseFloat(document.getElementById('order-limit-price').value);
+                if (!payload.limit_price) { errEl.textContent = 'Enter a limit price'; errEl.classList.remove('hidden'); return; }
+            }
+
+            try {
+                const resp = await fetch(`${API}/api/v1/broker/orders`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Order failed');
+                }
+
+                const result = await resp.json();
+                successEl.textContent = `Order placed: ${result.side} ${result.qty} ${result.ticker} (${result.status})`;
+                successEl.classList.remove('hidden');
+                setTimeout(() => successEl.classList.add('hidden'), 5000);
+                document.getElementById('order-ticker').value = '';
+                loadBrokerData();
+            } catch (e) {
+                errEl.textContent = e.message;
+                errEl.classList.remove('hidden');
+            }
+        }
+
+        async function closeBrokerPosition(ticker) {
+            try {
+                const resp = await fetch(`${API}/api/v1/broker/positions/${ticker}`, { method: 'DELETE' });
+                if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail); }
+                loadBrokerData();
+            } catch (e) {
+                console.error('Close position failed:', e);
+            }
+        }
+
+        async function cancelBrokerOrder(orderId) {
+            try {
+                const resp = await fetch(`${API}/api/v1/broker/orders/${orderId}`, { method: 'DELETE' });
+                if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail); }
+                loadBrokerData();
+            } catch (e) {
+                console.error('Cancel order failed:', e);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // SYSTEM STATUS
+        // ═══════════════════════════════════════════════════════
 
         async function loadSignalLayers() {
             try {

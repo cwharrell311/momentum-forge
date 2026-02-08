@@ -165,6 +165,152 @@ class FMPClient:
             return data[0]
         return None
 
+    async def get_insider_trading(self, ticker: str, limit: int = 50) -> list[dict]:
+        """
+        Get recent insider transactions (SEC Form 4 filings).
+
+        Returns a list of transactions with fields like:
+        - transactionType: "P-Purchase" or "S-Sale"
+        - securitiesTransacted: number of shares
+        - price: transaction price
+        - reportingName: insider name
+        - typeOfOwner: "officer", "director", "10 percent owner"
+        - transactionDate: date of the transaction
+
+        FMP stable endpoint: /insider-trading?symbol=AAPL
+        """
+        data = await self._get(
+            "insider-trading",
+            params={"symbol": ticker, "limit": limit},
+        )
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def close(self) -> None:
+        """Shut down the HTTP client."""
+        await self._client.aclose()
+
+
+class AlpacaClient:
+    """
+    Alpaca Trading API client.
+
+    Supports both paper trading and live trading. Paper trading is FREE
+    and uses a separate base URL (paper-api.alpaca.markets).
+
+    Features:
+    - Get account info (buying power, equity, cash)
+    - List current positions
+    - Place market/limit orders
+    - Get order status and cancel orders
+
+    Docs: https://docs.alpaca.markets/reference
+    """
+
+    def __init__(self, api_key: str, secret_key: str, base_url: str = "https://paper-api.alpaca.markets"):
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(
+            timeout=30.0,
+            headers={
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": secret_key,
+            },
+        )
+        self._limiter = RateLimiter(rate=3.0, max_tokens=5)
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if Alpaca API keys are set."""
+        return bool(self.api_key and self.secret_key)
+
+    @property
+    def is_paper(self) -> bool:
+        """Check if we're using paper trading."""
+        return "paper" in self.base_url
+
+    async def _request(self, method: str, path: str, json: dict | None = None) -> dict | list | None:
+        """Make an authenticated request to Alpaca."""
+        if not self.is_configured:
+            return None
+
+        await self._limiter.acquire()
+
+        try:
+            resp = await self._client.request(
+                method,
+                f"{self.base_url}/v2/{path}",
+                json=json,
+            )
+            resp.raise_for_status()
+            if resp.status_code == 204:
+                return {}
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            body = ""
+            try:
+                body = e.response.json().get("message", "")
+            except Exception:
+                body = e.response.text[:200]
+            print(f"Alpaca API error ({e.response.status_code}): {path} — {body}")
+            return None
+        except httpx.RequestError as e:
+            print(f"Alpaca request failed: {e}")
+            return None
+
+    async def get_account(self) -> dict | None:
+        """Get account details: equity, buying power, cash, status."""
+        return await self._request("GET", "account")
+
+    async def get_positions(self) -> list | None:
+        """Get all open positions."""
+        return await self._request("GET", "positions")
+
+    async def get_position(self, ticker: str) -> dict | None:
+        """Get position for a specific ticker."""
+        return await self._request("GET", f"positions/{ticker}")
+
+    async def place_order(
+        self,
+        ticker: str,
+        qty: int,
+        side: str,          # "buy" or "sell"
+        order_type: str = "market",  # "market" or "limit"
+        limit_price: float | None = None,
+        time_in_force: str = "day",  # "day", "gtc", "ioc"
+    ) -> dict | None:
+        """
+        Place an order on Alpaca.
+
+        For market orders: just ticker, qty, side.
+        For limit orders: also pass limit_price.
+        """
+        payload: dict = {
+            "symbol": ticker.upper(),
+            "qty": str(qty),
+            "side": side.lower(),
+            "type": order_type.lower(),
+            "time_in_force": time_in_force,
+        }
+        if order_type == "limit" and limit_price is not None:
+            payload["limit_price"] = str(limit_price)
+
+        return await self._request("POST", "orders", json=payload)
+
+    async def get_orders(self, status: str = "open", limit: int = 50) -> list | None:
+        """Get orders. Status: open, closed, all."""
+        return await self._request("GET", f"orders?status={status}&limit={limit}")
+
+    async def cancel_order(self, order_id: str) -> dict | None:
+        """Cancel an open order."""
+        return await self._request("DELETE", f"orders/{order_id}")
+
+    async def close_position(self, ticker: str) -> dict | None:
+        """Close an entire position for a ticker (sell all shares)."""
+        return await self._request("DELETE", f"positions/{ticker}")
+
     async def close(self) -> None:
         """Shut down the HTTP client."""
         await self._client.aclose()

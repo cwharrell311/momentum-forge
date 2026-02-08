@@ -19,47 +19,61 @@ from __future__ import annotations
 from src.services.cache import ResultCache
 from src.services.confluence import ConfluenceEngine
 from src.signals.base import SignalProcessor
+from src.signals.insider import InsiderProcessor
 from src.signals.momentum import MomentumProcessor
 from src.signals.vix_regime import VixRegimeProcessor
-from src.utils.data_providers import FMPClient
+from src.utils.data_providers import AlpacaClient, FMPClient
 
 # These get populated by init_app() during startup
 _fmp_client: FMPClient | None = None
+_alpaca_client: AlpacaClient | None = None
 _processors: list[SignalProcessor] = []
 _engine: ConfluenceEngine | None = None
 _vix_processor: VixRegimeProcessor | None = None
 _cache: ResultCache = ResultCache()
 
 
-def init_app(fmp_api_key: str) -> None:
+def init_app(fmp_api_key: str, alpaca_key: str = "", alpaca_secret: str = "", alpaca_base_url: str = "") -> None:
     """
     Initialize all shared dependencies.
 
     Called once during FastAPI lifespan startup. Creates:
     - FMP client (shared HTTP client with rate limiting)
+    - Alpaca client (paper/live trading)
     - Momentum processor (uses FMP)
     - VIX regime processor (uses FMP)
+    - Insider trading processor (uses FMP)
     - Confluence engine (combines all processors)
     """
-    global _fmp_client, _processors, _engine, _vix_processor
+    global _fmp_client, _alpaca_client, _processors, _engine, _vix_processor
 
     _fmp_client = FMPClient(api_key=fmp_api_key)
+
+    # Alpaca client — works even without keys (is_configured returns False)
+    _alpaca_client = AlpacaClient(
+        api_key=alpaca_key,
+        secret_key=alpaca_secret,
+        base_url=alpaca_base_url or "https://paper-api.alpaca.markets",
+    )
 
     # Create signal processors — add more here as they're implemented
     momentum = MomentumProcessor(fmp_client=_fmp_client)
     vix = VixRegimeProcessor(fmp_client=_fmp_client)
+    insider = InsiderProcessor(fmp_client=_fmp_client)
     _vix_processor = vix
 
-    _processors = [momentum, vix]
+    _processors = [momentum, vix, insider]
 
     _engine = ConfluenceEngine(processors=_processors)
 
 
 async def cleanup_app() -> None:
     """Close all shared resources. Called during shutdown."""
-    global _fmp_client
+    global _fmp_client, _alpaca_client
     if _fmp_client:
         await _fmp_client.close()
+    if _alpaca_client:
+        await _alpaca_client.close()
 
 
 def get_engine() -> ConfluenceEngine:
@@ -82,6 +96,11 @@ def get_vix_processor() -> VixRegimeProcessor | None:
 def get_fmp_client() -> FMPClient | None:
     """Get the shared FMP client instance (for quota tracking)."""
     return _fmp_client
+
+
+def get_alpaca_client() -> AlpacaClient | None:
+    """Get the shared Alpaca client instance."""
+    return _alpaca_client
 
 
 def get_cache() -> ResultCache:
