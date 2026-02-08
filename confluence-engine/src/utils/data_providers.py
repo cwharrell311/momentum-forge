@@ -572,11 +572,13 @@ class UnusualWhalesClient:
 
         Updated bi-weekly by FINRA.
 
-        UW endpoint: /stock/{ticker}/short-interest
+        UW endpoint: /shorts/{ticker}/data
         """
-        data = await self._get(f"stock/{ticker}/short-interest")
+        data = await self._get(f"shorts/{ticker}/data")
         if isinstance(data, dict):
             return data
+        if isinstance(data, list) and data:
+            return {"data": data}
         return None
 
     # ── Volume/OI Overview ───────────────────────────────────────
