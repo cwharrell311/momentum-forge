@@ -391,15 +391,20 @@ class UnusualWhalesClient:
 
         try:
             self._call_count += 1
-            resp = await self._client.get(
-                f"{self.BASE_URL}/{path}",
-                params=params,
-            )
+            url = f"{self.BASE_URL}/{path}"
+            resp = await self._client.get(url, params=params)
             if resp.status_code == 429:
                 log.warning("UW rate limited (429): %s", path)
                 return None
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            # Log response shape for debugging
+            if isinstance(data, list):
+                log.debug("UW %s → %d items", path, len(data))
+            elif isinstance(data, dict):
+                keys = list(data.keys())[:5]
+                log.debug("UW %s → dict keys: %s", path, keys)
+            return data
         except httpx.HTTPStatusError as e:
             self._error_count += 1
             log.error("UW API error (%d): %s", e.response.status_code, path)
@@ -411,12 +416,28 @@ class UnusualWhalesClient:
 
     # ── Options Flow ─────────────────────────────────────────────
 
-    async def get_flow_alerts(self, ticker: str) -> list[dict]:
+    async def get_flow_alerts(self, ticker: str, limit: int = 200) -> list[dict]:
         """
-        Get recent options flow for a specific ticker.
+        Get unusual options flow alerts for a specific ticker.
 
-        Returns recent flow including sweeps, blocks, golden sweeps,
-        and unusual activity.
+        Returns aggregated flow alerts (sweeps, blocks, golden sweeps)
+        with sentiment, premium, and alert classification.
+
+        UW endpoint: /option-trades/flow-alerts?ticker_symbol={ticker}
+        """
+        data = await self._get(
+            "option-trades/flow-alerts",
+            params={"ticker_symbol": ticker, "limit": limit},
+        )
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_flow_recent(self, ticker: str) -> list[dict]:
+        """
+        Get raw recent option trades for a ticker (individual fills).
 
         UW endpoint: /stock/{ticker}/flow-recent
         """
