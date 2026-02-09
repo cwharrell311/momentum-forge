@@ -68,18 +68,43 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def create_tables() -> None:
     """
-    Create all database tables if they don't exist.
+    Create all database tables if they don't exist, then add any
+    missing columns to existing tables.
 
-    Uses the SQLAlchemy models defined in src/models/tables.py.
-    Safe to call multiple times — CREATE TABLE IF NOT EXISTS.
+    SQLAlchemy's create_all() only creates NEW tables — it won't add
+    columns to tables that already exist. The _COLUMN_MIGRATIONS list
+    handles that by running ALTER TABLE for any missing columns.
+
+    Safe to call multiple times.
     """
+    from sqlalchemy import text
+
     from src.models.base import Base
 
     # Import tables so they're registered with Base.metadata
     import src.models.tables  # noqa: F401
 
     async with _engine.begin() as conn:
+        # Step 1: Create any brand-new tables
         await conn.run_sync(Base.metadata.create_all)
+
+        # Step 2: Add missing columns to existing tables
+        # (table, column, sql_type)
+        migrations = [
+            ("trades", "alpaca_order_id", "VARCHAR(64)"),
+        ]
+        for table, column, sql_type in migrations:
+            result = await conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :table AND column_name = :column"
+                ),
+                {"table": table, "column": column},
+            )
+            if not result.fetchone():
+                await conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+                )
 
 
 async def close_engine() -> None:
