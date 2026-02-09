@@ -57,6 +57,7 @@ class TradeResponse(BaseModel):
     pnl: float | None
     pnl_pct: float | None = None
     confluence_score_id: int | None
+    alpaca_order_id: str | None = None
     entry_at: str | None
     exit_at: str | None
     notes: str | None
@@ -116,6 +117,7 @@ def _format_trade(t: Trade) -> TradeResponse:
         pnl=round(pnl, 2) if pnl is not None else None,
         pnl_pct=pnl_pct,
         confluence_score_id=t.confluence_score_id,
+        alpaca_order_id=t.alpaca_order_id,
         entry_at=t.entry_at.isoformat() if t.entry_at else None,
         exit_at=t.exit_at.isoformat() if t.exit_at else None,
         notes=t.notes,

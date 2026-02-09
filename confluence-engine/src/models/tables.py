@@ -142,6 +142,9 @@ class Trade(Base):
     confluence_score_id: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    alpaca_order_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # Links to Alpaca order for reconciliation
     entry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     exit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
