@@ -1,10 +1,9 @@
-# Default Watchlist
-# FMP free tier: 250 API calls/day. Each ticker = 2 calls (quote + VIX).
-# With 15 tickers, you can scan ~8 times per day.
-# Expand this list when you upgrade to a paid FMP plan.
+# Default Watchlist — 35 tickers
+# FMP free tier: 250 calls/day. UW: 15,000 calls/day.
+# At 5-min scans: ~156 FMP calls + ~5,000 UW calls per day.
 
 tickers:
-  # Core positions — highest options liquidity
+  # ── Mega-cap tech — highest options liquidity ──
   - AAPL
   - NVDA
   - TSLA
@@ -13,16 +12,38 @@ tickers:
   - MSFT
   - AMD
   - GOOGL
-
-  # High momentum / active options names
-  - PLTR
-  - SMCI
   - AVGO
 
-  # ETFs — broad market read
-  - SPY
-  - QQQ
-  - IWM
+  # ── High momentum / heavy options flow ──
+  - PLTR
+  - SMCI
+  - ARM
+  - COIN
+  - MSTR
+  - NFLX
+  - CRM
+  - SOFI
+  - MARA
 
-  # Add more tickers here as you upgrade your FMP plan
-  # or switch to a paid data source
+  # ── Blue chip / swing-friendly ──
+  - JPM
+  - V
+  - UNH
+  - LLY
+  - BA
+  - DIS
+  - COST
+
+  # ── Sector ETFs — read the rotation ──
+  - SPY    # S&P 500
+  - QQQ    # Nasdaq 100
+  - IWM    # Russell 2000 (small caps)
+  - XLF    # Financials
+  - XLE    # Energy
+  - XLK    # Technology
+  - GLD    # Gold
+  - TLT    # Long-term treasuries
+
+  # ── Volatility / meme-adjacent — squeeze candidates ──
+  - RIVN
+  - GME
