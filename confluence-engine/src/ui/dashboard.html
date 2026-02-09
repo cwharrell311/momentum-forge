@@ -593,7 +593,7 @@
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-        <span style="color: var(--accent-dim)">CONFLUENCE</span> <span class="text-slate-600">&middot;</span> 8 layers <span class="text-slate-600">&middot;</span> 15m scan <span class="text-slate-600">&middot;</span> 30s refresh
+        <span style="color: var(--accent-dim)">CONFLUENCE</span> <span class="text-slate-600">&middot;</span> 8 layers <span class="text-slate-600">&middot;</span> 15m scan <span class="text-slate-600">&middot;</span> 60s refresh
     </footer>
 
     <script>
@@ -1820,7 +1820,7 @@
         refreshData();
         loadOpenTradeCount();
 
-        setInterval(refreshData, 30000);
+        setInterval(refreshData, 60000);
 
         setInterval(() => {
             if (lastCacheAge != null) {
