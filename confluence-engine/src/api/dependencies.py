@@ -73,7 +73,7 @@ def init_app(
     # ── FMP-powered processors (free tier, always active) ──
     momentum = MomentumProcessor(fmp_client=_fmp_client)
     vix = VixRegimeProcessor(fmp_client=_fmp_client)
-    insider = InsiderProcessor(fmp_client=_fmp_client)
+    insider = InsiderProcessor(fmp_client=_fmp_client, uw_client=_uw_client)
     _vix_processor = vix
 
     # ── UW-powered processors (activate when UW_API_KEY is set) ──
@@ -87,7 +87,7 @@ def init_app(
     _processors = [
         momentum,           # FMP free tier
         vix,                # FMP free tier (regime filter, not scored)
-        insider,            # FMP free tier
+        insider,            # UW primary, FMP fallback
         options_flow,       # UW Basic ($150/mo) — highest weight
         gex,                # UW Basic
         volatility,         # UW Basic

@@ -83,6 +83,13 @@ class FMPClient:
     async def _get(self, path: str, params: dict | None = None) -> list | dict | None:
         """Make a rate-limited GET request to FMP."""
         self._check_date_reset()
+
+        # Guard: skip calls when quota is nearly exhausted.
+        # Reserve 20 calls for VIX/regime (critical for dashboard).
+        if self._call_count >= self.DAILY_QUOTA - 20:
+            log.debug("FMP quota guard: %d/%d used, skipping %s", self._call_count, self.DAILY_QUOTA, path)
+            return None
+
         await self._limiter.acquire()
 
         url = f"{self.BASE_URL}/{path}"
@@ -495,6 +502,8 @@ class UnusualWhalesClient:
         data = await self._get(f"stock/{ticker}/spot-exposures/strike")
         if isinstance(data, dict):
             return data
+        if isinstance(data, list):
+            return {"data": data}
         return None
 
     async def get_greek_exposure_by_strike(self, ticker: str) -> dict | None:
@@ -581,6 +590,24 @@ class UnusualWhalesClient:
             return {"data": data}
         return None
 
+    # ── Insider Transactions ────────────────────────────────────
+
+    async def get_insider_transactions(self, ticker: str, limit: int = 100) -> list[dict]:
+        """
+        Get insider transactions (SEC Form 4 filings) from UW.
+
+        UW endpoint: /insider/transactions?ticker_symbol={ticker}
+        """
+        data = await self._get(
+            "insider/transactions",
+            params={"ticker_symbol": ticker, "limit": limit},
+        )
+        if isinstance(data, dict):
+            return data.get("data", [])
+        if isinstance(data, list):
+            return data
+        return []
+
     # ── Volume/OI Overview ───────────────────────────────────────
 
     async def get_volume_oi(self, ticker: str) -> dict | None:
@@ -594,6 +621,8 @@ class UnusualWhalesClient:
         data = await self._get(f"stock/{ticker}/options-volume")
         if isinstance(data, dict):
             return data
+        if isinstance(data, list) and data:
+            return {"data": data}
         return None
 
     # ── Interpolated IV ──────────────────────────────────────────
@@ -610,6 +639,8 @@ class UnusualWhalesClient:
         data = await self._get(f"stock/{ticker}/interpolated-iv")
         if isinstance(data, dict):
             return data
+        if isinstance(data, list) and data:
+            return {"data": data}
         return None
 
     # ── Net Premium Ticks ────────────────────────────────────────

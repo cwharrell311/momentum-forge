@@ -30,7 +30,7 @@ import logging
 from datetime import datetime, timedelta
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
-from src.utils.data_providers import FMPClient
+from src.utils.data_providers import FMPClient, UnusualWhalesClient
 
 log = logging.getLogger(__name__)
 
@@ -42,10 +42,11 @@ C_SUITE_KEYWORDS = {"ceo", "cfo", "coo", "cto", "president", "chief"}
 
 
 class InsiderProcessor(SignalProcessor):
-    """Insider trading signal processor using FMP SEC Form 4 data."""
+    """Insider trading signal processor — UW primary, FMP fallback."""
 
-    def __init__(self, fmp_client: FMPClient):
+    def __init__(self, fmp_client: FMPClient, uw_client: UnusualWhalesClient | None = None):
         self._fmp = fmp_client
+        self._uw = uw_client
 
     @property
     def name(self) -> str:
@@ -79,7 +80,17 @@ class InsiderProcessor(SignalProcessor):
         based on the pattern of buying vs selling.
         """
         try:
-            transactions = await self._fmp.get_insider_trading(ticker, limit=50)
+            # Try UW first (more reliable, no quota issues)
+            transactions = None
+            if self._uw and self._uw.is_configured:
+                raw = await self._uw.get_insider_transactions(ticker)
+                if raw:
+                    transactions = self._normalize_uw_insider(raw)
+
+            # Fall back to FMP if UW didn't return data
+            if not transactions:
+                transactions = await self._fmp.get_insider_trading(ticker, limit=50)
+
             if not transactions:
                 return None
 
@@ -261,6 +272,22 @@ class InsiderProcessor(SignalProcessor):
             "unique_sellers": unique_sellers,
             "most_recent": most_recent,
         }
+
+    @staticmethod
+    def _normalize_uw_insider(raw: list[dict]) -> list[dict]:
+        """Normalize UW insider transaction fields to FMP-compatible format."""
+        normalized = []
+        for txn in raw:
+            normalized.append({
+                "transactionDate": txn.get("filing_date") or txn.get("transaction_date") or txn.get("date", ""),
+                "filingDate": txn.get("filing_date") or txn.get("date", ""),
+                "transactionType": txn.get("transaction_type") or txn.get("acquisition_or_disposition", ""),
+                "securitiesTransacted": txn.get("shares") or txn.get("quantity") or txn.get("securities_transacted", 0),
+                "price": txn.get("price") or txn.get("price_per_share", 0),
+                "reportingName": txn.get("full_name") or txn.get("insider_name") or txn.get("reporting_name", ""),
+                "typeOfOwner": txn.get("title") or txn.get("owner_type") or txn.get("relationship", ""),
+            })
+        return normalized
 
     def _is_c_suite(self, name: str, owner_type: str) -> bool:
         """Check if the insider is a C-suite executive."""
