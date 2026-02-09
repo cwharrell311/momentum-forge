@@ -71,6 +71,31 @@ async def run_confluence_scan() -> None:
         except Exception as e:
             logger.debug(f"History save skipped (DB not available): {e}")
 
+        # Auto-journal: log qualifying signals to trade journal
+        try:
+            from src.config import get_settings
+            from src.services.auto_journal import process_scan_results
+
+            settings = get_settings()
+            if settings.auto_trade_enabled:
+                regime_str = regime.value if regime else None
+                logged = await process_scan_results(
+                    scores=scores,
+                    regime_value=regime_str,
+                    min_conviction=settings.auto_trade_min_conviction,
+                    min_layers=settings.auto_trade_min_layers,
+                )
+                if logged:
+                    logger.info(
+                        "Auto-journal: %d new entries — %s",
+                        len(logged),
+                        ", ".join(
+                            f"{e['ticker']} ({e['conviction']}%)" for e in logged
+                        ),
+                    )
+        except Exception as e:
+            logger.warning(f"Auto-journal failed: {e}")
+
         logger.info(
             f"Scan complete: {len(scores)} tickers with signals "
             f"(out of {len(tickers)} scanned) — cached."

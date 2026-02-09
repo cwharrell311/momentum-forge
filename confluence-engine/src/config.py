@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     """All application settings, loaded from .env file."""
 
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).parent.parent / ".env",
+        env_file=str(Path(__file__).parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     log_level: str = "INFO"
     scan_interval: int = 900  # seconds between full scans (15 min saves API quota)
+
+    # ── Auto-Trading ──
+    auto_trade_enabled: bool = False       # Master switch — set true to enable
+    auto_trade_min_conviction: int = 60    # Min conviction % to trigger a trade
+    auto_trade_min_layers: int = 3         # Min agreeing layers
+    auto_trade_max_positions: int = 5      # Max simultaneous open positions
+    auto_trade_risk_pct: float = 2.0       # Max % of equity to risk per trade
+    auto_trade_stop_loss_pct: float = 5.0  # Stop loss % below entry
 
     @property
     def sync_database_url(self) -> str:

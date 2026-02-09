@@ -36,6 +36,13 @@ class ApiQuotaStatus(BaseModel):
     configured: bool
 
 
+class AutoJournalStatus(BaseModel):
+    enabled: bool
+    min_conviction: int
+    min_layers: int
+    logged_this_session: list[str]  # Tickers already logged
+
+
 class SystemStatus(BaseModel):
     fmp_quota: QuotaStatus
     uw_quota: ApiQuotaStatus | None
@@ -44,6 +51,7 @@ class SystemStatus(BaseModel):
     db_connected: bool
     active_layers: int
     total_layers: int
+    auto_journal: AutoJournalStatus | None = None
 
 
 class LayerStatus(BaseModel):
@@ -111,6 +119,18 @@ async def system_status():
     except Exception:
         pass
 
+    # Auto-journal status
+    from src.config import get_settings as _get_settings
+    from src.services.auto_journal import get_session_log
+
+    _settings = _get_settings()
+    auto_journal = AutoJournalStatus(
+        enabled=_settings.auto_trade_enabled,
+        min_conviction=_settings.auto_trade_min_conviction,
+        min_layers=_settings.auto_trade_min_layers,
+        logged_this_session=get_session_log(),
+    )
+
     return SystemStatus(
         fmp_quota=QuotaStatus(**quota),
         uw_quota=uw_quota,
@@ -119,6 +139,7 @@ async def system_status():
         db_connected=db_ok,
         active_layers=active_layers,
         total_layers=total_layers,
+        auto_journal=auto_journal,
     )
 
 
@@ -230,3 +251,55 @@ async def get_signal_layers():
         ))
 
     return layers
+
+
+# ── Auto-Journal Control ──
+
+
+class AutoJournalToggle(BaseModel):
+    enabled: bool
+    min_conviction: int | None = None  # Optional: update threshold
+    min_layers: int | None = None      # Optional: update threshold
+
+
+@router.post("/auto-journal", response_model=AutoJournalStatus)
+async def toggle_auto_journal(req: AutoJournalToggle):
+    """
+    Toggle auto-journal on/off and optionally update thresholds.
+
+    When enabled, the scanner automatically logs trade journal entries
+    for any ticker that crosses the conviction threshold. This lets you
+    track signals while you're away from the dashboard during market hours.
+    """
+    from src.config import get_settings as _get_settings
+    from src.services.auto_journal import get_session_log
+
+    settings = _get_settings()
+
+    # Update the runtime settings (in-memory, survives until restart)
+    settings.auto_trade_enabled = req.enabled
+    if req.min_conviction is not None:
+        settings.auto_trade_min_conviction = req.min_conviction
+    if req.min_layers is not None:
+        settings.auto_trade_min_layers = req.min_layers
+
+    return AutoJournalStatus(
+        enabled=settings.auto_trade_enabled,
+        min_conviction=settings.auto_trade_min_conviction,
+        min_layers=settings.auto_trade_min_layers,
+        logged_this_session=get_session_log(),
+    )
+
+
+@router.post("/auto-journal/clear")
+async def clear_auto_journal_session():
+    """
+    Clear the auto-journal session log.
+
+    Resets the deduplication tracker so tickers can be re-logged.
+    Call this at the start of each trading day.
+    """
+    from src.services.auto_journal import clear_session_log
+
+    clear_session_log()
+    return {"status": "cleared"}

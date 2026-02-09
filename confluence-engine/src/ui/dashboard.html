@@ -76,6 +76,10 @@
                     <div class="text-[10px] text-slate-600 uppercase tracking-wider">Next</div>
                     <div id="next-scan" class="text-xs text-slate-400 font-mono">&mdash;</div>
                 </div>
+                <button id="auto-journal-btn" onclick="toggleAutoJournal()" class="text-xs font-semibold px-3 py-1.5 rounded border transition-colors"
+                    title="Auto-log signals to trade journal">
+                    AUTO-LOG
+                </button>
                 <button id="scan-now-btn" onclick="triggerScan()" class="text-xs font-semibold px-3 py-1.5 rounded border border-slate-600 text-slate-300 hover:border-cyan-500 hover:text-cyan-400 transition-colors">
                     SCAN
                 </button>
@@ -1988,6 +1992,57 @@
         }
 
         // ═══════════════════════════════════════════════════════
+        // AUTO-JOURNAL TOGGLE
+        // ═══════════════════════════════════════════════════════
+
+        let autoJournalEnabled = false;
+
+        async function loadAutoJournalStatus() {
+            try {
+                const resp = await fetch(`${API}/api/v1/system/status`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (data.auto_journal) {
+                    autoJournalEnabled = data.auto_journal.enabled;
+                    updateAutoJournalButton();
+                }
+            } catch (e) {}
+        }
+
+        function updateAutoJournalButton() {
+            const btn = document.getElementById('auto-journal-btn');
+            if (autoJournalEnabled) {
+                btn.className = 'text-xs font-semibold px-3 py-1.5 rounded border border-green-600 text-green-400 bg-green-900/30 transition-colors';
+                btn.textContent = 'AUTO-LOG ON';
+            } else {
+                btn.className = 'text-xs font-semibold px-3 py-1.5 rounded border border-slate-600 text-slate-500 transition-colors hover:border-slate-400 hover:text-slate-300';
+                btn.textContent = 'AUTO-LOG';
+            }
+        }
+
+        async function toggleAutoJournal() {
+            const newState = !autoJournalEnabled;
+            try {
+                const resp = await fetch(`${API}/api/v1/system/auto-journal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        enabled: newState,
+                        min_conviction: convictionThreshold,
+                        min_layers: minLayersThreshold,
+                    }),
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    autoJournalEnabled = data.enabled;
+                    updateAutoJournalButton();
+                }
+            } catch (e) {
+                console.error('Auto-journal toggle failed:', e);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
         // INITIALIZATION
         // ═══════════════════════════════════════════════════════
 
@@ -2012,6 +2067,7 @@
 
         refreshData();
         loadOpenTradeCount();
+        loadAutoJournalStatus();
 
         setInterval(refreshData, 60000);
 
