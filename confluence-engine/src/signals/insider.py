@@ -170,8 +170,8 @@ class InsiderProcessor(SignalProcessor):
                 most_recent = txn_date_str
 
             txn_type = (txn.get("transactionType") or "").upper()
-            shares = txn.get("securitiesTransacted") or 0
-            price = txn.get("price") or 0
+            shares = self._safe_float(txn.get("securitiesTransacted"))
+            price = self._safe_float(txn.get("price"))
             value = abs(shares * price)
             name = txn.get("reportingName") or ""
             owner_type = (txn.get("typeOfOwner") or "").lower()
