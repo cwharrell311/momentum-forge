@@ -29,6 +29,15 @@ from src.signals.volatility import VolatilityProcessor
 from src.signals.vix_regime import VixRegimeProcessor
 from src.utils.data_providers import AlpacaClient, FMPClient, UnusualWhalesClient
 
+# Index products to exclude from universe discovery.
+# Their options flow is predominantly hedging (portfolio protection),
+# not directional conviction — scoring them like equities produces
+# false bearish signals (e.g. SPXW at 60% bearish = just hedge flow).
+_INDEX_TICKERS = {
+    "SPX", "SPXW", "NDX", "VIX", "VIXW", "RUT", "DJX", "OEX", "XSP",
+    "SPXS", "SPXL",  # Leveraged SPX ETFs with distorted flow
+}
+
 # These get populated by init_app() during startup
 _fmp_client: FMPClient | None = None
 _uw_client: UnusualWhalesClient | None = None
@@ -237,6 +246,9 @@ async def discover_active_tickers() -> list[str]:
                 continue  # Skip invalid/long tickers (indexes, etc.)
             # Skip common non-equity tickers
             if ticker.startswith("^") or ticker.startswith("$"):
+                continue
+            # Skip index products — their flow is mostly hedging, not directional
+            if ticker in _INDEX_TICKERS:
                 continue
 
             premium = 0.0
