@@ -699,6 +699,11 @@
         let minLayersThreshold = parseInt(localStorage.getItem('layers_threshold') || '4');
 
         function isTradeWorthy(score) {
+            // Use the backend's flow gate decision if available,
+            // otherwise fall back to conviction + layers check
+            if (score.trade_worthy !== undefined) {
+                return score.trade_worthy;
+            }
             return score.conviction >= convictionThreshold && score.active_layers >= minLayersThreshold;
         }
 
@@ -1249,7 +1254,16 @@
                 `;
             }).join('');
 
-            return priceSummary + signalCards;
+            // Flow gate status banner
+            let gateBanner = '';
+            if (score.gate_details) {
+                const isWorthy = score.trade_worthy;
+                const gateColor = isWorthy ? 'border-emerald-600/40 bg-emerald-900/20 text-emerald-400' : 'border-red-600/40 bg-red-900/20 text-red-400';
+                const gateIcon = isWorthy ? '&#10003;' : '&#10007;';
+                gateBanner = `<div class="rounded-lg p-3 mb-3 border text-xs font-medium ${gateColor}">${gateIcon} ${score.gate_details}</div>`;
+            }
+
+            return priceSummary + gateBanner + signalCards;
         }
 
         function toggleDetail(id) {
