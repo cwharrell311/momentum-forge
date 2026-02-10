@@ -89,11 +89,14 @@ async def create_tables() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
         # Step 2: Add missing columns to existing tables
-        # (table, column, sql_type)
-        migrations = [
+        # (table, column, sql_type) — validated against allowlist
+        ALLOWED_TYPES = {"VARCHAR(64)", "VARCHAR(10)", "INTEGER", "FLOAT", "TEXT", "JSONB"}
+        column_migrations = [
             ("trades", "alpaca_order_id", "VARCHAR(64)"),
         ]
-        for table, column, sql_type in migrations:
+        for table, column, sql_type in column_migrations:
+            if sql_type not in ALLOWED_TYPES:
+                raise ValueError(f"Invalid SQL type in migration: {sql_type}")
             result = await conn.execute(
                 text(
                     "SELECT 1 FROM information_schema.columns "
@@ -104,6 +107,26 @@ async def create_tables() -> None:
             if not result.fetchone():
                 await conn.execute(
                     text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+                )
+
+        # Step 3: Add missing indexes to existing tables
+        index_migrations = [
+            ("idx_signals_layer_ticker", "signals", "layer, ticker"),
+            ("idx_confluence_ticker", "confluence_scores", "ticker, created_at"),
+            ("idx_trade_ticker_entry", "trades", "ticker, entry_at"),
+            ("idx_trade_confluence_id", "trades", "confluence_score_id"),
+        ]
+        for idx_name, table, columns in index_migrations:
+            result = await conn.execute(
+                text(
+                    "SELECT 1 FROM pg_indexes "
+                    "WHERE indexname = :idx_name"
+                ),
+                {"idx_name": idx_name},
+            )
+            if not result.fetchone():
+                await conn.execute(
+                    text(f"CREATE INDEX {idx_name} ON {table} ({columns})")
                 )
 
 

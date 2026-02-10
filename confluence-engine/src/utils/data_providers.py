@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 
@@ -80,40 +81,49 @@ class FMPClient:
             "date": self._last_reset_date,
         }
 
-    async def _get(self, path: str, params: dict | None = None) -> list | dict | None:
-        """Make a rate-limited GET request to FMP."""
+    async def _get(self, path: str, params: dict | None = None, retries: int = 2) -> list | dict | None:
+        """Make a rate-limited GET request to FMP with retry on transient errors."""
         self._check_date_reset()
 
         # Guard: skip calls when quota is nearly exhausted.
         # Reserve 20 calls for VIX/regime (critical for dashboard).
         if self._call_count >= self.DAILY_QUOTA - 20:
-            log.debug("FMP quota guard: %d/%d used, skipping %s", self._call_count, self.DAILY_QUOTA, path)
+            log.warning(
+                "FMP quota nearly exhausted: %d/%d used — skipping %s. "
+                "Increase SCAN_INTERVAL or upgrade FMP plan.",
+                self._call_count, self.DAILY_QUOTA, path,
+            )
             return None
-
-        await self._limiter.acquire()
 
         url = f"{self.BASE_URL}/{path}"
         all_params = {"apikey": self.api_key}
         if params:
             all_params.update(params)
 
-        try:
-            self._call_count += 1
-            resp = await self._client.get(url, params=all_params)
-            if resp.status_code == 429:
-                self._rate_limited_count += 1
-                log.warning("FMP rate limited (429): %s — quota likely exhausted", path)
-                return None
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as e:
-            self._error_count += 1
-            log.error("FMP API error (%d): %s", e.response.status_code, path)
-            return None
-        except httpx.RequestError as e:
-            self._error_count += 1
-            log.error("FMP request failed: %s", e)
-            return None
+        for attempt in range(retries + 1):
+            await self._limiter.acquire()
+            try:
+                self._call_count += 1
+                resp = await self._client.get(url, params=all_params)
+                if resp.status_code == 429:
+                    self._rate_limited_count += 1
+                    log.warning("FMP rate limited (429): %s — quota likely exhausted", path)
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                self._error_count += 1
+                log.error("FMP API error (%d): %s", e.response.status_code, path)
+                return None  # Don't retry HTTP errors (4xx/5xx are usually permanent)
+            except httpx.RequestError as e:
+                self._error_count += 1
+                if attempt < retries:
+                    wait = 2 ** attempt  # 1s, 2s
+                    log.warning("FMP request failed (attempt %d/%d): %s — retrying in %ds", attempt + 1, retries + 1, e, wait)
+                    await asyncio.sleep(wait)
+                else:
+                    log.error("FMP request failed after %d attempts: %s", retries + 1, e)
+                    return None
 
     async def get_quote(self, ticker: str) -> dict | None:
         """Get current quote (price, volume, change, 52w range)."""
@@ -388,38 +398,45 @@ class UnusualWhalesClient:
             "date": self._last_reset_date,
         }
 
-    async def _get(self, path: str, params: dict | None = None) -> dict | list | None:
-        """Make a rate-limited GET request to Unusual Whales."""
+    async def _get(self, path: str, params: dict | None = None, retries: int = 2) -> dict | list | None:
+        """Make a rate-limited GET request to Unusual Whales with retry on transient errors."""
         if not self.api_key:
             return None
 
         self._check_date_reset()
-        await self._limiter.acquire()
 
-        try:
-            self._call_count += 1
-            url = f"{self.BASE_URL}/{path}"
-            resp = await self._client.get(url, params=params)
-            if resp.status_code == 429:
-                log.warning("UW rate limited (429): %s", path)
-                return None
-            resp.raise_for_status()
-            data = resp.json()
-            # Log response shape for debugging
-            if isinstance(data, list):
-                log.debug("UW %s → %d items", path, len(data))
-            elif isinstance(data, dict):
-                keys = list(data.keys())[:5]
-                log.debug("UW %s → dict keys: %s", path, keys)
-            return data
-        except httpx.HTTPStatusError as e:
-            self._error_count += 1
-            log.error("UW API error (%d): %s", e.response.status_code, path)
-            return None
-        except httpx.RequestError as e:
-            self._error_count += 1
-            log.error("UW request failed: %s", e)
-            return None
+        url = f"{self.BASE_URL}/{path}"
+
+        for attempt in range(retries + 1):
+            await self._limiter.acquire()
+            try:
+                self._call_count += 1
+                resp = await self._client.get(url, params=params)
+                if resp.status_code == 429:
+                    log.warning("UW rate limited (429): %s", path)
+                    return None
+                resp.raise_for_status()
+                data = resp.json()
+                # Log response shape for debugging
+                if isinstance(data, list):
+                    log.debug("UW %s → %d items", path, len(data))
+                elif isinstance(data, dict):
+                    keys = list(data.keys())[:5]
+                    log.debug("UW %s → dict keys: %s", path, keys)
+                return data
+            except httpx.HTTPStatusError as e:
+                self._error_count += 1
+                log.error("UW API error (%d): %s", e.response.status_code, path)
+                return None  # Don't retry HTTP errors
+            except httpx.RequestError as e:
+                self._error_count += 1
+                if attempt < retries:
+                    wait = 2 ** attempt
+                    log.warning("UW request failed (attempt %d/%d): %s — retrying in %ds", attempt + 1, retries + 1, e, wait)
+                    await asyncio.sleep(wait)
+                else:
+                    log.error("UW request failed after %d attempts: %s", retries + 1, e)
+                    return None
 
     # ── Options Flow ─────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +56,41 @@ class Settings(BaseSettings):
     auto_trade_max_positions: int = 5      # Max simultaneous open positions
     auto_trade_risk_pct: float = 2.0       # Max % of equity to risk per trade
     auto_trade_stop_loss_pct: float = 5.0  # Stop loss % below entry
+
+    @field_validator("scan_interval")
+    @classmethod
+    def validate_scan_interval(cls, v: int) -> int:
+        if not 60 <= v <= 3600:
+            raise ValueError("scan_interval must be 60-3600 seconds (1 min to 1 hour)")
+        return v
+
+    @field_validator("auto_trade_min_conviction")
+    @classmethod
+    def validate_conviction(cls, v: int) -> int:
+        if not 1 <= v <= 100:
+            raise ValueError("auto_trade_min_conviction must be 1-100 (%)")
+        return v
+
+    @field_validator("auto_trade_min_layers")
+    @classmethod
+    def validate_min_layers(cls, v: int) -> int:
+        if not 1 <= v <= 8:
+            raise ValueError("auto_trade_min_layers must be 1-8")
+        return v
+
+    @field_validator("auto_trade_risk_pct")
+    @classmethod
+    def validate_risk_pct(cls, v: float) -> float:
+        if not 0.1 <= v <= 10.0:
+            raise ValueError("auto_trade_risk_pct must be 0.1-10.0 (%)")
+        return v
+
+    @field_validator("auto_trade_stop_loss_pct")
+    @classmethod
+    def validate_stop_loss(cls, v: float) -> float:
+        if not 0.5 <= v <= 25.0:
+            raise ValueError("auto_trade_stop_loss_pct must be 0.5-25.0 (%)")
+        return v
 
     @property
     def sync_database_url(self) -> str:

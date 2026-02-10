@@ -13,10 +13,15 @@ Redis caching comes later when we need persistence across restarts.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.signals.base import ConfluenceScore, Regime, SignalResult
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -25,48 +30,55 @@ class ScanResult:
     scores: list[ConfluenceScore] = field(default_factory=list)
     regime: Regime = Regime.ELEVATED
     scanned_tickers: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
 
 
 class ResultCache:
     """
     Stores the latest scan results in memory.
 
+    Thread-safe: uses asyncio.Lock to prevent concurrent read/write
+    corruption between the scheduler (writes) and API routes (reads).
+
     Usage:
         cache = ResultCache()
-        cache.update(scores, regime, ticker_count)  # Called by scheduler
-        result = cache.latest()                       # Called by API routes
+        await cache.update(scores, regime, ticker_count)  # Called by scheduler
+        result = await cache.latest()                      # Called by API routes
     """
 
     def __init__(self):
         self._latest: ScanResult | None = None
         self._signal_history: dict[str, list[SignalResult]] = {}
+        self._lock = asyncio.Lock()
 
-    def update(
+    async def update(
         self,
         scores: list[ConfluenceScore],
         regime: Regime,
         scanned_tickers: int,
     ) -> None:
         """Store new scan results. Called by the scheduler after each scan."""
-        self._latest = ScanResult(
-            scores=scores,
-            regime=regime,
-            scanned_tickers=scanned_tickers,
-            timestamp=datetime.utcnow(),
-        )
+        async with self._lock:
+            self._latest = ScanResult(
+                scores=scores,
+                regime=regime,
+                scanned_tickers=scanned_tickers,
+                timestamp=_utcnow(),
+            )
 
-        # Also store individual signals per ticker for history
-        for score in scores:
-            self._signal_history[score.ticker] = score.signals
+            # Also store individual signals per ticker for history
+            for score in scores:
+                self._signal_history[score.ticker] = score.signals
 
-    def latest(self) -> ScanResult | None:
+    async def latest(self) -> ScanResult | None:
         """Get the most recent scan results. Returns None if no scan has run yet."""
-        return self._latest
+        async with self._lock:
+            return self._latest
 
-    def get_ticker_signals(self, ticker: str) -> list[SignalResult]:
+    async def get_ticker_signals(self, ticker: str) -> list[SignalResult]:
         """Get the latest signals for a specific ticker."""
-        return self._signal_history.get(ticker, [])
+        async with self._lock:
+            return self._signal_history.get(ticker, [])
 
     @property
     def has_data(self) -> bool:
@@ -77,4 +89,4 @@ class ResultCache:
         """How many seconds since the last scan."""
         if not self._latest:
             return float("inf")
-        return (datetime.utcnow() - self._latest.timestamp).total_seconds()
+        return (_utcnow() - self._latest.timestamp).total_seconds()

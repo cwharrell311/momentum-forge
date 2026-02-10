@@ -20,7 +20,7 @@ GET  /api/v1/confluence/{ticker} → Deep dive on a single ticker (live scan)
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -33,7 +33,7 @@ class SignalResponse(BaseModel):
     strength: float
     confidence: float
     explanation: str
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
 
 
 class ConfluenceResponse(BaseModel):
@@ -91,7 +91,7 @@ async def get_confluence():
     from src.api.dependencies import get_cache
 
     cache = get_cache()
-    result = cache.latest()
+    result = await cache.latest()
 
     if not result:
         return ConfluenceListResponse(
@@ -123,7 +123,7 @@ async def trigger_scan():
 
     from src.api.dependencies import get_cache
     cache = get_cache()
-    result = cache.latest()
+    result = await cache.latest()
 
     if not result or not result.scores:
         return {"status": "complete", "scanned": 0, "top_conviction": 0}
@@ -146,7 +146,7 @@ async def get_confluence_ticker(ticker: str):
 
     # Try cache first
     cache = get_cache()
-    result = cache.latest()
+    result = await cache.latest()
     if result:
         for s in result.scores:
             if s.ticker == ticker:

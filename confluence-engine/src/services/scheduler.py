@@ -48,7 +48,7 @@ async def run_confluence_scan() -> None:
         regime = await engine.get_current_regime()
 
         # Store results in cache — dashboard reads from here
-        cache.update(
+        await cache.update(
             scores=scores,
             regime=regime,
             scanned_tickers=len(tickers),
@@ -122,7 +122,7 @@ def start_scheduler(interval_seconds: int = 300) -> AsyncIOScheduler:
         seconds=interval_seconds,
         id="confluence_scan",
         name="Full confluence scan",
-        next_run_time=datetime.utcnow(),  # Run immediately on startup
+        next_run_time=datetime.now(),  # Run immediately on startup
     )
 
     _scheduler.start()

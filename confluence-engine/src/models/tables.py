@@ -15,7 +15,7 @@ Table overview:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -32,6 +32,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from src.models.base import Base
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class Watchlist(Base):
     """
     Tickers being actively scanned by the confluence engine.
@@ -45,7 +49,7 @@ class Watchlist(Base):
 
     ticker: Mapped[str] = mapped_column(String(10), primary_key=True)
     added_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=_utcnow
     )
     sector: Mapped[str | None] = mapped_column(String(50), nullable=True)
     avg_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -78,12 +82,13 @@ class Signal(Base):
     )
     explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=_utcnow
     )
 
     __table_args__ = (
         Index("idx_signals_ticker_time", "ticker", "created_at"),
         Index("idx_signals_layer", "layer", "created_at"),
+        Index("idx_signals_layer_ticker", "layer", "ticker"),
     )
 
 
@@ -111,11 +116,12 @@ class ConfluenceScoreRecord(Base):
         ARRAY(Integer), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=_utcnow
     )
 
     __table_args__ = (
         Index("idx_confluence_conviction", "conviction", "created_at"),
+        Index("idx_confluence_ticker", "ticker", "created_at"),
     )
 
 
@@ -150,7 +156,12 @@ class Trade(Base):
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=_utcnow
+    )
+
+    __table_args__ = (
+        Index("idx_trade_ticker_entry", "ticker", "entry_at"),
+        Index("idx_trade_confluence_id", "confluence_score_id"),
     )
 
 
@@ -174,5 +185,5 @@ class Alert(Base):
     conviction: Mapped[float | None] = mapped_column(Float, nullable=True)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=_utcnow
     )

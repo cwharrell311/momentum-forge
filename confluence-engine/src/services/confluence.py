@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +29,7 @@ from src.signals.base import (
     SignalResult,
 )
 
-# Default weights — override via config/signals.yaml
+# Default weights — overridden by config/signals.yaml if it exists
 DEFAULT_WEIGHTS: dict[str, float] = {
     "options_flow": 0.25,
     "gex": 0.18,
@@ -37,6 +40,21 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "momentum": 0.12,
     # vix_regime is NOT weighted — it modifies other weights
 }
+
+
+def _load_signal_config() -> dict:
+    """Load signal weights and multipliers from config/signals.yaml."""
+    config_path = Path(__file__).parent.parent.parent / "config" / "signals.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f) or {}
+        except Exception as e:
+            log.warning("Failed to load signals.yaml: %s — using defaults", e)
+    return {}
+
+
+_config = _load_signal_config()
 
 # How much to boost conviction when multiple layers agree
 CONFLUENCE_MULTIPLIERS: dict[int, float] = {
@@ -76,7 +94,7 @@ class ConfluenceEngine:
         weights: dict[str, float] | None = None,
     ):
         self.processors = processors
-        self.weights = weights or DEFAULT_WEIGHTS
+        self.weights = weights or _config.get("signal_weights", DEFAULT_WEIGHTS)
 
         # Separate the VIX regime processor from scoring processors
         self._regime_processor: SignalProcessor | None = None
@@ -263,5 +281,5 @@ class ConfluenceEngine:
             total_layers=len(self._signal_processors),
             signals=signals,
             regime=regime,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
