@@ -136,10 +136,7 @@
             <button onclick="switchTab('performance')" id="tab-performance" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 Performance
             </button>
-            <button onclick="switchTab('watchlist')" id="tab-watchlist" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
-                Watchlist
-            </button>
-            <button onclick="switchTab('broker')" id="tab-broker" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
+<button onclick="switchTab('broker')" id="tab-broker" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 Broker
             </button>
             <button onclick="switchTab('system')" id="tab-system" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
@@ -307,40 +304,6 @@
                 </div>
             </div>
         </div>
-        <!-- ═══ WATCHLIST TAB ═══ -->
-        <div id="panel-watchlist" class="hidden">
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-lg font-semibold text-white">Manage Watchlist</h2>
-                <div class="text-xs text-slate-500" id="watchlist-count"></div>
-            </div>
-
-            <!-- Add Ticker Form -->
-            <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-6">
-                <div class="flex gap-3">
-                    <input id="add-ticker-input" type="text" placeholder="Enter ticker (e.g., AAPL)" maxlength="10"
-                        class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-white uppercase font-mono"
-                        onkeydown="if(event.key==='Enter') addTicker()">
-                    <input id="add-ticker-sector" type="text" placeholder="Sector (optional)"
-                        class="w-40 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-300 text-sm"
-                        onkeydown="if(event.key==='Enter') addTicker()">
-                    <button onclick="addTicker()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2.5 rounded-lg text-white font-semibold text-sm transition">
-                        Add
-                    </button>
-                </div>
-                <div id="add-ticker-error" class="hidden text-red-400 text-sm mt-2"></div>
-                <div id="add-ticker-success" class="hidden text-green-400 text-sm mt-2"></div>
-            </div>
-
-            <!-- Watchlist Grid -->
-            <div id="watchlist-error" class="text-center py-12 hidden">
-                <p class="text-amber-400 text-lg">Database not connected</p>
-                <p class="text-slate-500 text-sm mt-2">Watchlist management needs PostgreSQL. Run <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">docker compose up -d</code></p>
-                <p class="text-slate-600 text-xs mt-3">Note: The screener still uses the YAML fallback (config/watchlist.yaml)</p>
-            </div>
-
-            <div id="watchlist-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"></div>
-        </div>
-
         <!-- ═══ BROKER TAB ═══ -->
         <div id="panel-broker" class="hidden">
             <div class="flex items-center justify-between mb-4">

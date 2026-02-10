@@ -265,15 +265,11 @@ async def discover_active_tickers() -> list[str]:
         # Sort by total premium (most active first)
         discovered = sorted(ticker_premium.keys(), key=lambda t: ticker_premium[t], reverse=True)
 
-        # Merge with watchlist (watchlist always included)
-        watchlist = await get_watchlist_tickers()
-        merged = list(dict.fromkeys(watchlist + discovered))  # De-dup, preserving order
-
         log.info(
-            "Universe: %d watchlist + %d discovered = %d total tickers",
-            len(watchlist), len(discovered), len(merged),
+            "Universe: %d tickers discovered from UW market flow",
+            len(discovered),
         )
-        return merged
+        return discovered
 
     except Exception as e:
         log.warning("Discovery failed: %s — using watchlist only", e)
