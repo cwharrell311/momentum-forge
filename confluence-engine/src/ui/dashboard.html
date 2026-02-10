@@ -147,7 +147,7 @@
         <!-- Loading State -->
         <div id="loading" class="text-center py-20">
             <div class="inline-block w-8 h-8 border-4 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div>
-            <p class="text-slate-400 mt-4">Scanning watchlist...</p>
+            <p class="text-slate-400 mt-4">Scanning market flow...</p>
             <p class="text-slate-500 text-sm mt-1">First scan takes 30-60 seconds (fetching data for all tickers)</p>
         </div>
 
@@ -779,7 +779,7 @@
         // ═══════════════════════════════════════════════════════
 
         function switchTab(tab) {
-            ['screener', 'journal', 'performance', 'watchlist', 'broker', 'system'].forEach(t => {
+            ['screener', 'journal', 'performance', 'broker', 'system'].forEach(t => {
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
                 const btn = document.getElementById(`tab-${t}`);
                 btn.className = t === tab
@@ -790,7 +790,6 @@
             // Load data for the selected tab
             if (tab === 'journal') loadTrades();
             if (tab === 'performance') loadPerformance();
-            if (tab === 'watchlist') loadWatchlist();
             if (tab === 'broker') loadBrokerData();
             if (tab === 'system') loadSystemStatus();
         }
@@ -1496,96 +1495,6 @@
                 document.getElementById('perf-error').classList.remove('hidden');
                 document.getElementById('perf-empty').classList.add('hidden');
                 document.getElementById('perf-content').classList.add('hidden');
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════
-        // WATCHLIST MANAGEMENT
-        // ═══════════════════════════════════════════════════════
-
-        async function loadWatchlist() {
-            try {
-                const resp = await fetch(`${API}/api/v1/watchlist`);
-                if (!resp.ok) throw new Error('DB error');
-                const tickers = await resp.json();
-
-                document.getElementById('watchlist-error').classList.add('hidden');
-                document.getElementById('watchlist-count').textContent = `${tickers.length} tickers`;
-
-                const grid = document.getElementById('watchlist-grid');
-                grid.innerHTML = '';
-
-                tickers.forEach(t => {
-                    const card = document.createElement('div');
-                    card.className = 'bg-slate-800 rounded-lg border border-slate-700 p-4 flex items-center justify-between group hover:border-slate-500 transition';
-                    card.innerHTML = `
-                        <div>
-                            <div class="font-bold text-white text-lg">${t.ticker}</div>
-                            ${t.sector ? `<div class="text-xs text-slate-500">${t.sector}</div>` : '<div class="text-xs text-slate-600">No sector</div>'}
-                        </div>
-                        <button onclick="removeTicker('${t.ticker}')" class="text-slate-600 hover:text-red-400 transition opacity-0 group-hover:opacity-100 text-lg" title="Remove ${t.ticker}">
-                            &times;
-                        </button>
-                    `;
-                    grid.appendChild(card);
-                });
-            } catch (e) {
-                document.getElementById('watchlist-error').classList.remove('hidden');
-                document.getElementById('watchlist-grid').innerHTML = '';
-            }
-        }
-
-        async function addTicker() {
-            const input = document.getElementById('add-ticker-input');
-            const sectorInput = document.getElementById('add-ticker-sector');
-            const ticker = input.value.trim().toUpperCase();
-            const errEl = document.getElementById('add-ticker-error');
-            const successEl = document.getElementById('add-ticker-success');
-
-            errEl.classList.add('hidden');
-            successEl.classList.add('hidden');
-
-            if (!ticker) {
-                errEl.textContent = 'Enter a ticker symbol';
-                errEl.classList.remove('hidden');
-                return;
-            }
-
-            try {
-                const payload = { ticker };
-                const sector = sectorInput.value.trim();
-                if (sector) payload.sector = sector;
-
-                const resp = await fetch(`${API}/api/v1/watchlist`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-
-                if (!resp.ok) {
-                    const err = await resp.json();
-                    throw new Error(err.detail || 'Failed to add ticker');
-                }
-
-                input.value = '';
-                sectorInput.value = '';
-                successEl.textContent = `${ticker} added to watchlist`;
-                successEl.classList.remove('hidden');
-                setTimeout(() => successEl.classList.add('hidden'), 3000);
-                loadWatchlist();
-            } catch (e) {
-                errEl.textContent = e.message.includes('fetch') ? 'Database not connected' : e.message;
-                errEl.classList.remove('hidden');
-            }
-        }
-
-        async function removeTicker(ticker) {
-            try {
-                const resp = await fetch(`${API}/api/v1/watchlist/${ticker}`, { method: 'DELETE' });
-                if (!resp.ok && resp.status !== 204) throw new Error('Failed');
-                loadWatchlist();
-            } catch (e) {
-                console.error('Failed to remove ticker:', e);
             }
         }
 
