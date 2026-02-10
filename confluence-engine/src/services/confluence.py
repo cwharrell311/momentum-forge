@@ -355,7 +355,22 @@ class ConfluenceEngine:
 
         # All gates passed
         confirmed_layers = [FLOW_GATE_PRIMARY] + confirming_secondary
-        return True, (
+        details = (
             f"TRADE WORTHY: {', '.join(confirmed_layers)} all confirm "
             f"{dominant.value} direction"
         )
+
+        # Check for dark pool conflict — institutional equity positioning
+        # disagrees with options flow. Common when institutions are hedging
+        # (accumulating stock + buying puts for protection). Flag it so the
+        # trader can factor it into their decision.
+        dp_data = layer_signals.get("dark_pool")
+        if dp_data:
+            dp_dir, dp_strength = dp_data
+            if dp_dir != dominant and dp_dir != Direction.NEUTRAL and dp_strength >= 0.40:
+                details += (
+                    f" | WARNING: dark pool is {dp_dir.value} ({dp_strength:.0%} str)"
+                    f" — institutions may be hedging, not directionally aligned"
+                )
+
+        return True, details
