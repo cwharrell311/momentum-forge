@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     log_level: str = "INFO"
     scan_interval: int = 900  # seconds between full scans (15 min saves API quota)
+    universe_discovery: bool = True  # Use UW market flow to find active tickers beyond watchlist
+    universe_max_tickers: int = 200  # Max tickers to pull from UW market flow
 
     # ── Auto-Trading ──
     auto_trade_enabled: bool = False       # Master switch — set true to enable

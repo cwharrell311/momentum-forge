@@ -16,7 +16,7 @@ entries are queued and logged to the console instead.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.signals.base import ConfluenceScore, Direction
 
@@ -50,6 +50,7 @@ async def process_scan_results(
         if s.conviction_pct >= min_conviction
         and s.active_layers >= min_layers
         and s.direction != Direction.NEUTRAL
+        and s.trade_worthy  # Flow gate must pass — smart money must agree
     ]
 
     if not qualifying:
@@ -113,6 +114,7 @@ async def _log_signal_to_journal(
     lines = [
         f"[AUTO-LOG] {score.direction.value.upper()} @ {score.conviction_pct}% conviction",
         f"Regime: {regime_value or 'unknown'} | Layers: {score.active_layers}",
+        f"Flow Gate: {score.gate_details}",
         "",
     ]
 
@@ -193,7 +195,7 @@ async def _log_signal_to_journal(
             entry_price=entry_price,
             quantity=0,  # 0 = signal only, no position taken yet
             confluence_score_id=None,
-            entry_at=datetime.utcnow(),
+            entry_at=datetime.now(timezone.utc),
             notes=notes,
         )
 
@@ -210,7 +212,7 @@ async def _log_signal_to_journal(
                 "active_layers": score.active_layers,
                 "entry_price": entry_price,
                 "regime": regime_value,
-                "logged_at": datetime.utcnow().isoformat(),
+                "logged_at": datetime.now(timezone.utc).isoformat(),
             }
 
     except Exception as e:
@@ -224,7 +226,7 @@ async def _log_signal_to_journal(
             "active_layers": score.active_layers,
             "entry_price": entry_price,
             "regime": regime_value,
-            "logged_at": datetime.utcnow().isoformat(),
+            "logged_at": datetime.now(timezone.utc).isoformat(),
             "db_error": str(e),
         }
 

@@ -182,3 +182,87 @@ async def get_watchlist_tickers() -> list[str]:
     except Exception:
         # Last resort: a few liquid names to get started
         return ["AAPL", "NVDA", "TSLA", "SPY", "QQQ"]
+
+
+async def discover_active_tickers() -> list[str]:
+    """
+    Discover tickers with unusual options activity across all US exchanges.
+
+    Uses UW's market-wide flow alerts endpoint to find ANY optionable stock
+    with recent institutional flow — not just your watchlist. This turns
+    the engine from a 35-ticker scanner into a full-market signal detector.
+
+    Returns a de-duplicated list of tickers sorted by flow volume.
+    Merges with the watchlist so your core names are always included.
+
+    Controlled by config:
+    - UNIVERSE_DISCOVERY=true  → scan market-wide flow + watchlist
+    - UNIVERSE_DISCOVERY=false → watchlist only (original behavior)
+    """
+    import logging
+
+    from src.config import get_settings
+
+    log = logging.getLogger("confluence.discovery")
+    settings = get_settings()
+
+    if not settings.universe_discovery:
+        log.debug("Universe discovery disabled — using watchlist only")
+        return await get_watchlist_tickers()
+
+    limit = settings.universe_max_tickers
+
+    if not _uw_client or not _uw_client.is_configured:
+        log.info("UW not configured — using watchlist only")
+        return await get_watchlist_tickers()
+
+    try:
+        # Pull market-wide flow alerts from UW
+        flow_alerts = await _uw_client.get_market_flow(limit=limit)
+
+        if not flow_alerts:
+            log.info("No market flow data — falling back to watchlist")
+            return await get_watchlist_tickers()
+
+        # Extract unique tickers from flow alerts, ranked by activity
+        ticker_premium: dict[str, float] = {}
+        for alert in flow_alerts:
+            ticker = (
+                alert.get("ticker_symbol")
+                or alert.get("underlying_symbol")
+                or alert.get("ticker")
+                or ""
+            ).upper().strip()
+            if not ticker or len(ticker) > 6:
+                continue  # Skip invalid/long tickers (indexes, etc.)
+            # Skip common non-equity tickers
+            if ticker.startswith("^") or ticker.startswith("$"):
+                continue
+
+            premium = 0.0
+            for key in ("total_premium", "premium", "cost_basis"):
+                val = alert.get(key)
+                if val is not None:
+                    try:
+                        premium = abs(float(val))
+                    except (ValueError, TypeError):
+                        pass
+                    break
+            ticker_premium[ticker] = ticker_premium.get(ticker, 0) + premium
+
+        # Sort by total premium (most active first)
+        discovered = sorted(ticker_premium.keys(), key=lambda t: ticker_premium[t], reverse=True)
+
+        # Merge with watchlist (watchlist always included)
+        watchlist = await get_watchlist_tickers()
+        merged = list(dict.fromkeys(watchlist + discovered))  # De-dup, preserving order
+
+        log.info(
+            "Universe: %d watchlist + %d discovered = %d total tickers",
+            len(watchlist), len(discovered), len(merged),
+        )
+        return merged
+
+    except Exception as e:
+        log.warning("Discovery failed: %s — using watchlist only", e)
+        return await get_watchlist_tickers()

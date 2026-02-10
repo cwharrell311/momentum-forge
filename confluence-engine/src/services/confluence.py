@@ -41,6 +41,14 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     # vix_regime is NOT weighted — it modifies other weights
 }
 
+# ── Flow Gate: required layers for a signal to be "trade worthy" ──
+# Options flow MUST agree with direction, PLUS at least one other
+# options-derived layer (GEX or volatility). This ensures smart money
+# is aligned before you risk real capital.
+FLOW_GATE_PRIMARY = "options_flow"           # Required layer
+FLOW_GATE_SECONDARY = {"gex", "volatility"}  # Need at least 1 to confirm
+FLOW_GATE_MIN_STRENGTH = 0.15               # Minimum strength to count as "agreeing"
+
 
 def _load_signal_config() -> dict:
     """Load signal weights and multipliers from config/signals.yaml."""
@@ -273,6 +281,9 @@ class ConfluenceEngine:
         # Clamp to 0.0 - 1.0
         conviction = max(0.0, min(1.0, raw_conviction))
 
+        # ── Flow Gate: determine if this signal is trade-worthy ──
+        trade_worthy, gate_details = self._check_flow_gate(signals, dominant)
+
         return ConfluenceScore(
             ticker=ticker,
             direction=dominant,
@@ -282,4 +293,69 @@ class ConfluenceEngine:
             signals=signals,
             regime=regime,
             timestamp=datetime.now(timezone.utc),
+            trade_worthy=trade_worthy,
+            gate_details=gate_details,
+        )
+
+    def _check_flow_gate(
+        self,
+        signals: list[SignalResult],
+        dominant: Direction,
+    ) -> tuple[bool, str]:
+        """
+        Flow gate: require options flow + at least one options-derived
+        layer (GEX or volatility) to agree with the dominant direction
+        before marking a signal as trade-worthy.
+
+        This prevents situations like BA where momentum + dark pool were
+        bullish but options flow was bearish — smart money was betting
+        against the move. Without this gate, the engine would score it
+        as a bullish trade at 68% conviction, which is wrong.
+
+        Returns:
+            (trade_worthy: bool, explanation: str)
+        """
+        # Build a lookup: layer_name -> (direction, strength)
+        layer_signals: dict[str, tuple[Direction, float]] = {}
+        for sig in signals:
+            layer_signals[sig.layer] = (sig.direction, sig.strength)
+
+        # Check 1: Is options_flow present and agreeing?
+        flow_data = layer_signals.get(FLOW_GATE_PRIMARY)
+        if not flow_data:
+            return False, "No options flow data — cannot confirm smart money direction"
+
+        flow_dir, flow_strength = flow_data
+        if flow_dir != dominant:
+            return False, (
+                f"FLOW GATE BLOCKED: options flow is {flow_dir.value} "
+                f"but dominant signal is {dominant.value} — smart money disagrees"
+            )
+
+        if flow_strength < FLOW_GATE_MIN_STRENGTH:
+            return False, (
+                f"Options flow too weak ({flow_strength:.0%}) — "
+                f"need >{FLOW_GATE_MIN_STRENGTH:.0%} to confirm direction"
+            )
+
+        # Check 2: At least one secondary options layer must confirm
+        confirming_secondary: list[str] = []
+        for layer_name in FLOW_GATE_SECONDARY:
+            sec_data = layer_signals.get(layer_name)
+            if sec_data:
+                sec_dir, sec_strength = sec_data
+                if sec_dir == dominant and sec_strength >= FLOW_GATE_MIN_STRENGTH:
+                    confirming_secondary.append(layer_name)
+
+        if not confirming_secondary:
+            return False, (
+                f"Options flow agrees ({flow_dir.value}) but no secondary "
+                f"options layer (GEX, volatility) confirms — need at least one"
+            )
+
+        # All gates passed
+        confirmed_layers = [FLOW_GATE_PRIMARY] + confirming_secondary
+        return True, (
+            f"TRADE WORTHY: {', '.join(confirmed_layers)} all confirm "
+            f"{dominant.value} direction"
         )

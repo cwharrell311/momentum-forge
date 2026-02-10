@@ -36,10 +36,10 @@ async def run_confluence_scan() -> None:
     3. Computes confluence scores
     4. Stores results in the cache for instant dashboard access
     """
-    from src.api.dependencies import get_cache, get_engine, get_watchlist_tickers
+    from src.api.dependencies import discover_active_tickers, get_cache, get_engine
 
     try:
-        tickers = await get_watchlist_tickers()
+        tickers = await discover_active_tickers()
         engine = get_engine()
         cache = get_cache()
 
@@ -57,10 +57,13 @@ async def run_confluence_scan() -> None:
         # Log top results
         if scores:
             top = scores[:5]
+            trade_worthy_count = sum(1 for s in scores if s.trade_worthy)
+            logger.info(f"  {trade_worthy_count} of {len(scores)} signals are TRADE WORTHY (flow gate passed)")
             for s in top:
+                tw = " [TRADE WORTHY]" if s.trade_worthy else ""
                 logger.info(
                     f"  {s.ticker}: {s.direction.value} @ {s.conviction_pct}% "
-                    f"({s.active_layers} layers)"
+                    f"({s.active_layers} layers){tw}"
                 )
         else:
             logger.info("  No signals firing")

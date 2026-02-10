@@ -43,6 +43,8 @@ class ConfluenceResponse(BaseModel):
     active_layers: int
     total_layers: int
     regime: str
+    trade_worthy: bool = False
+    gate_details: str = ""
     signals: list[SignalResponse] = []
 
 
@@ -64,6 +66,8 @@ def _format_score(s) -> ConfluenceResponse:
         active_layers=s.active_layers,
         total_layers=s.total_layers,
         regime=s.regime.value,
+        trade_worthy=s.trade_worthy,
+        gate_details=s.gate_details,
         signals=[
             SignalResponse(
                 layer=sig.layer,

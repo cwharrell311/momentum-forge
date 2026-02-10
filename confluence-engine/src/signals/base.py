@@ -59,6 +59,8 @@ class ConfluenceScore:
     signals: list[SignalResult] = field(default_factory=list)
     regime: Regime = Regime.CALM
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    trade_worthy: bool = False          # True only when flow gate passes
+    gate_details: str = ""              # Explains why trade_worthy is True/False
 
     @property
     def conviction_pct(self) -> int:
