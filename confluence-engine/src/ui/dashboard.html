@@ -19,17 +19,21 @@
         .conviction-bar { height: 6px; border-radius: 3px; transition: width 0.6s cubic-bezier(.4,0,.2,1); }
         .conv-heat-low { background: linear-gradient(90deg, #475569, #64748b); }
         .conv-heat-mid { background: linear-gradient(90deg, #ca8a04, #eab308); }
-        .conv-heat-high { background: linear-gradient(90deg, #059669, #34d399); }
-        .conv-heat-extreme { background: linear-gradient(90deg, #06b6d4, #22d3ee); }
+        .conv-heat-high.bullish { background: linear-gradient(90deg, #059669, #34d399); }
+        .conv-heat-high.bearish { background: linear-gradient(90deg, #dc2626, #f87171); }
+        .conv-heat-extreme.bullish { background: linear-gradient(90deg, #06b6d4, #22d3ee); }
+        .conv-heat-extreme.bearish { background: linear-gradient(90deg, #b91c1c, #ef4444); }
         .ticker-row { transition: background 0.15s ease, opacity 0.3s ease; cursor: pointer; border-left: 3px solid transparent; }
         .ticker-row:hover { background: var(--bg-card-hover); border-left-color: var(--accent); }
         .ticker-row.below-threshold { opacity: 0.4; }
         .ticker-row.below-threshold:hover { opacity: 0.7; }
         .ticker-row.trade-worthy.bullish { border-left-color: #06b6d4; background: rgba(6, 182, 212, 0.04); }
         .ticker-row.trade-worthy.bearish { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.04); }
+        .ticker-row.trade-worthy.caution { border-left-color: #eab308; background: rgba(234, 179, 8, 0.04); }
         .trade-badge { font-size: 9px; font-weight: 700; letter-spacing: 0.06em; padding: 2px 6px; border-radius: 3px; text-transform: uppercase; }
         .trade-badge.bullish { background: linear-gradient(135deg, #0e7490, #065f46); color: #a7f3d0; }
         .trade-badge.bearish { background: linear-gradient(135deg, #991b1b, #7f1d1d); color: #fca5a5; }
+        .trade-badge.caution { background: linear-gradient(135deg, #854d0e, #713f12); color: #fde68a; }
         .signal-chip { padding: 2px 10px; border-radius: 999px; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.02em; }
         .pulse { animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -949,9 +953,10 @@
         // RENDER: CONFLUENCE TABLE
         // ═══════════════════════════════════════════════════════
 
-        function convHeatClass(conviction) {
-            if (conviction >= 70) return 'conv-heat-extreme';
-            if (conviction >= 50) return 'conv-heat-high';
+        function convHeatClass(conviction, direction) {
+            const dir = direction === 'bearish' ? ' bearish' : ' bullish';
+            if (conviction >= 70) return 'conv-heat-extreme' + dir;
+            if (conviction >= 50) return 'conv-heat-high' + dir;
             if (conviction >= 30) return 'conv-heat-mid';
             return 'conv-heat-low';
         }
@@ -971,7 +976,7 @@
             scores.forEach((score, index) => {
                 const dirColor = score.direction === 'bullish' ? 'bullish' : score.direction === 'bearish' ? 'bearish' : 'neutral';
                 const dirArrow = score.direction === 'bullish' ? '&#9650;' : score.direction === 'bearish' ? '&#9660;' : '&#9644;';
-                const heatClass = convHeatClass(score.conviction);
+                const heatClass = convHeatClass(score.conviction, score.direction);
                 const worthy = isTradeWorthy(score);
 
                 let convColor = 'text-slate-400';
@@ -985,9 +990,11 @@
 
                 const detailId = `detail-${score.ticker}`;
                 const layerDots = renderLayerDots(score.active_layers, score.total_layers);
-                const dirLabel = score.direction === 'bearish' ? 'bearish' : 'bullish';
-                const worthyBadge = worthy ? `<span class="trade-badge ${dirLabel} ml-2">Trade Worthy</span>` : '';
-                const rowClass = worthy ? `trade-worthy ${dirLabel}` : 'below-threshold';
+                const hasDpConflict = worthy && (score.gate_details || '').includes('WARNING');
+                const badgeStyle = hasDpConflict ? 'caution' : (score.direction === 'bearish' ? 'bearish' : 'bullish');
+                const badgeText = hasDpConflict ? 'Caution' : 'Trade Worthy';
+                const worthyBadge = worthy ? `<span class="trade-badge ${badgeStyle} ml-2">${badgeText}</span>` : '';
+                const rowClass = worthy ? `trade-worthy ${badgeStyle}` : 'below-threshold';
 
                 const row = document.createElement('div');
                 row.innerHTML = `
@@ -1012,7 +1019,7 @@
                             ${layerDots}
                         </div>
                         <div class="col-span-2 text-right">
-                            <button onclick="event.stopPropagation(); openTradeModal('${score.ticker}')" class="text-[11px] bg-transparent border ${worthy ? 'border-cyan-700 text-cyan-400 hover:border-cyan-500 hover:bg-cyan-900/20' : 'border-slate-600 hover:border-cyan-600 hover:text-cyan-400 text-slate-400'} px-3 py-1 rounded transition">
+                            <button onclick="event.stopPropagation(); openTradeModal('${score.ticker}')" class="text-[11px] bg-transparent border ${hasDpConflict ? 'border-yellow-700 text-yellow-400 hover:border-yellow-500 hover:bg-yellow-900/20' : worthy ? (score.direction === 'bearish' ? 'border-red-700 text-red-400 hover:border-red-500 hover:bg-red-900/20' : 'border-cyan-700 text-cyan-400 hover:border-cyan-500 hover:bg-cyan-900/20') : 'border-slate-600 hover:border-cyan-600 hover:text-cyan-400 text-slate-400'} px-3 py-1 rounded transition">
                                 Trade
                             </button>
                         </div>
@@ -1258,12 +1265,26 @@
                 `;
             }).join('');
 
-            // Flow gate status banner
+            // Flow gate status banner — green bullish, red bearish/blocked, yellow caution (DP conflict)
             let gateBanner = '';
             if (score.gate_details) {
                 const isWorthy = score.trade_worthy;
-                const gateColor = isWorthy ? 'border-emerald-600/40 bg-emerald-900/20 text-emerald-400' : 'border-red-600/40 bg-red-900/20 text-red-400';
-                const gateIcon = isWorthy ? '&#10003;' : '&#10007;';
+                const isBearish = score.direction === 'bearish';
+                const hasDpWarn = (score.gate_details || '').includes('WARNING');
+                let gateColor, gateIcon;
+                if (!isWorthy) {
+                    gateColor = 'border-red-600/40 bg-red-900/20 text-red-400';
+                    gateIcon = '&#10007;';
+                } else if (hasDpWarn) {
+                    gateColor = 'border-yellow-600/40 bg-yellow-900/20 text-yellow-400';
+                    gateIcon = '&#9888;';
+                } else if (isBearish) {
+                    gateColor = 'border-red-600/40 bg-red-900/20 text-red-400';
+                    gateIcon = '&#10003;';
+                } else {
+                    gateColor = 'border-emerald-600/40 bg-emerald-900/20 text-emerald-400';
+                    gateIcon = '&#10003;';
+                }
                 gateBanner = `<div class="rounded-lg p-3 mb-3 border text-xs font-medium ${gateColor}">${gateIcon} ${score.gate_details}</div>`;
             }
 
