@@ -183,6 +183,10 @@
                             </div>
                         </div>
                         <div class="flex items-center gap-3">
+                            <label class="flex items-center gap-1.5 cursor-pointer">
+                                <input type="checkbox" id="toggle-show-all" onchange="toggleShowAll()" class="accent-cyan-500 w-3 h-3">
+                                <span class="text-[10px] text-slate-500">Show All</span>
+                            </label>
                             <span id="market-status" class="text-xs text-slate-500"></span>
                             <button onclick="refreshData()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-md text-slate-300 transition">
                                 Refresh Now
@@ -969,11 +973,29 @@
             return dots;
         }
 
+        let _showAll = false;
+        let _lastScores = null;
+
+        function toggleShowAll() {
+            _showAll = document.getElementById('toggle-show-all').checked;
+            if (_lastScores) renderTable(_lastScores);
+        }
+
         function renderTable(scores) {
             const body = document.getElementById('table-body');
             body.innerHTML = '';
 
-            scores.forEach((score, index) => {
+            _lastScores = scores;
+
+            // By default, only show trade-worthy signals. "Show All" reveals the rest.
+            const filtered = _showAll ? scores : scores.filter(s => isTradeWorthy(s));
+
+            if (filtered.length === 0 && scores.length > 0) {
+                body.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">No trade-worthy signals right now. <span class="text-cyan-500 cursor-pointer underline" onclick="document.getElementById('toggle-show-all').checked=true;toggleShowAll();">Show all ${scores.length} tickers</span></div>`;
+                return;
+            }
+
+            filtered.forEach((score, index) => {
                 const dirColor = score.direction === 'bullish' ? 'bullish' : score.direction === 'bearish' ? 'bearish' : 'neutral';
                 const dirArrow = score.direction === 'bullish' ? '&#9650;' : score.direction === 'bearish' ? '&#9660;' : '&#9644;';
                 const heatClass = convHeatClass(score.conviction, score.direction);
