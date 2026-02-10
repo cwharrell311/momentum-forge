@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confluence</title>
+    <title>Vicuna</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         :root { --accent: #06b6d4; --accent-dim: #0e7490; --bg-base: #0a0f1a; --bg-card: #111827; --bg-card-hover: #1a2332; --border: #1e293b; }
@@ -68,7 +68,7 @@
     <header class="border-b border-slate-700/60 px-6 py-3">
         <div class="max-w-7xl mx-auto flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <h1 class="text-xl font-bold tracking-tight" style="color: var(--accent)">CONFLUENCE</h1>
+                <h1 class="text-xl font-bold tracking-tight" style="color: var(--accent)">VICUNA</h1>
                 <span class="text-[10px] text-slate-600 font-mono tracking-widest uppercase border border-slate-700 px-2 py-0.5 rounded">v0.3</span>
             </div>
             <div class="flex items-center gap-5">
@@ -656,7 +656,7 @@
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-        <span style="color: var(--accent-dim)">CONFLUENCE</span> <span class="text-slate-600">&middot;</span> 8 layers <span class="text-slate-600">&middot;</span> 15m scan <span class="text-slate-600">&middot;</span> 60s refresh
+        <span style="color: var(--accent-dim)">VICUNA</span> <span class="text-slate-600">&middot;</span> 8 layers <span class="text-slate-600">&middot;</span> 15m scan <span class="text-slate-600">&middot;</span> 60s refresh
     </footer>
 
     <script>
@@ -1268,9 +1268,9 @@
             const badge = document.getElementById('trade-conviction-badge');
             if (score) {
                 const dirColor = score.direction === 'bullish' ? 'text-green-400' : 'text-red-400';
-                badge.innerHTML = `Confluence: <span class="${dirColor} font-bold">${score.direction} ${score.conviction}%</span> &mdash; ${score.active_layers} layers aligned`;
+                badge.innerHTML = `Vicuna: <span class="${dirColor} font-bold">${score.direction} ${score.conviction}%</span> &mdash; ${score.active_layers} layers aligned`;
             } else {
-                badge.innerHTML = 'No active confluence signal for this ticker';
+                badge.innerHTML = 'No active vicuna signal for this ticker';
             }
 
             document.getElementById('trade-modal').classList.remove('hidden');
