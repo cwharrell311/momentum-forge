@@ -219,6 +219,68 @@ async def broker_status():
     )
 
 
+@router.get("/test-data")
+async def test_alpaca_data():
+    """
+    Diagnostic: test Alpaca market data API with SPY.
+
+    Hit this endpoint to see exactly what Alpaca returns for bars.
+    Shows raw response, auth status, and which feed works.
+    """
+    import httpx
+
+    from src.api.dependencies import get_alpaca_client
+    client = get_alpaca_client()
+
+    if not client or not client.is_configured:
+        return {"error": "Alpaca not configured", "configured": False}
+
+    results = {}
+
+    # Test account connection first
+    account = await client.get_account()
+    results["account_connected"] = account is not None
+    if account:
+        results["account_status"] = account.get("status")
+
+    # Try fetching SPY bars with different feeds
+    from datetime import datetime, timedelta, timezone
+
+    start = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00Z")
+
+    for feed in (None, "sip", "iex"):
+        feed_label = feed or "default"
+        try:
+            params: dict = {
+                "timeframe": "1Day",
+                "limit": 5,
+                "start": start,
+                "sort": "asc",
+            }
+            if feed:
+                params["feed"] = feed
+
+            resp = await client._data_client.get(
+                f"{client.DATA_URL}/v2/stocks/SPY/bars",
+                params=params,
+            )
+            bars = resp.json().get("bars") or []
+            results[f"feed_{feed_label}"] = {
+                "status": resp.status_code,
+                "bar_count": len(bars),
+                "sample": bars[0] if bars else None,
+            }
+        except httpx.HTTPStatusError as e:
+            results[f"feed_{feed_label}"] = {
+                "status": e.response.status_code,
+                "error": e.response.text[:300],
+            }
+        except Exception as e:
+            results[f"feed_{feed_label}"] = {"error": str(e)}
+
+    return results
+
+
 @router.get("/account", response_model=AccountResponse)
 async def get_account():
     """Get Alpaca account info: equity, buying power, cash."""

@@ -378,41 +378,48 @@ class AlpacaClient:
         await self._limiter.acquire()
 
         # Explicit start date ensures Alpaca returns recent bars.
-        # Without it, some API versions return empty or very old data.
         from datetime import datetime, timedelta, timezone
 
         start_date = (datetime.now(timezone.utc) - timedelta(days=int(limit * 1.5))).strftime("%Y-%m-%dT00:00:00Z")
 
-        try:
-            resp = await self._data_client.get(
-                f"{self.DATA_URL}/v2/stocks/{ticker}/bars",
-                params={
+        # Try without explicit feed first (uses account default),
+        # then fall back to iex if empty. Paper accounts may not have SIP access.
+        for feed in (None, "iex"):
+            try:
+                params: dict = {
                     "timeframe": timeframe,
                     "limit": limit,
                     "start": start_date,
-                    "feed": "sip",
                     "sort": "asc",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            bars = data.get("bars") or []
-            if not bars:
-                log.info("Alpaca bars %s: 200 OK but empty bars (start=%s)", ticker, start_date)
-            else:
-                log.debug("Alpaca bars %s: %d bars returned", ticker, len(bars))
-            return bars
-        except httpx.HTTPStatusError as e:
-            body = ""
-            try:
-                body = e.response.text[:200]
-            except Exception:
-                pass
-            log.error("Alpaca bars error (%d) for %s: %s", e.response.status_code, ticker, body)
-            return None
-        except httpx.RequestError as e:
-            log.error("Alpaca bars request failed for %s: %s", ticker, e)
-            return None
+                }
+                if feed:
+                    params["feed"] = feed
+
+                resp = await self._data_client.get(
+                    f"{self.DATA_URL}/v2/stocks/{ticker}/bars",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                bars = data.get("bars") or []
+                if bars:
+                    log.debug("Alpaca bars %s: %d bars (feed=%s)", ticker, len(bars), feed or "default")
+                    return bars
+                log.debug("Alpaca bars %s: empty with feed=%s, trying next", ticker, feed or "default")
+            except httpx.HTTPStatusError as e:
+                body = ""
+                try:
+                    body = e.response.text[:200]
+                except Exception:
+                    pass
+                log.warning("Alpaca bars %s feed=%s: HTTP %d — %s", ticker, feed or "default", e.response.status_code, body)
+                continue
+            except httpx.RequestError as e:
+                log.error("Alpaca bars request failed for %s: %s", ticker, e)
+                return None
+
+        log.info("Alpaca bars %s: no data from any feed", ticker)
+        return None
 
     async def get_snapshot(self, ticker: str) -> dict | None:
         """
