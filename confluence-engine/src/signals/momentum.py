@@ -75,12 +75,19 @@ class MomentumProcessor(SignalProcessor):
         """
         try:
             bars = await self._alpaca.get_bars(ticker, timeframe="1Day", limit=252)
-            if not bars or len(bars) < 20:
+            if not bars:
+                log.info("Momentum %s: no bars returned from Alpaca (IEX feed may lack data)", ticker)
                 return None
+            if len(bars) < 20:
+                log.info("Momentum %s: only %d bars (need 20+) — IEX has limited history", ticker, len(bars))
+                return None
+
+            log.debug("Momentum %s: got %d daily bars", ticker, len(bars))
 
             # Convert raw bars into the quote dict the scoring engine expects
             quote = self._bars_to_quote(bars)
             if not quote:
+                log.warning("Momentum %s: bars_to_quote returned None", ticker)
                 return None
 
             scores = self._score_components(quote)
@@ -97,6 +104,13 @@ class MomentumProcessor(SignalProcessor):
             else:
                 direction = Direction.NEUTRAL
                 strength = 0.15
+
+            log.info(
+                "Momentum %s: %s (str=%.2f, bull=%.1f bear=%.1f) — $%.2f %+.1f%%",
+                ticker, direction.value, strength,
+                scores.get("bull_score", 0), scores.get("bear_score", 0),
+                quote.get("price", 0), quote.get("changesPercentage", 0),
+            )
 
             return SignalResult(
                 ticker=ticker,

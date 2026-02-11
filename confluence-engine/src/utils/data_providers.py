@@ -355,8 +355,12 @@ class AlpacaClient:
         """
         Get historical price bars from Alpaca Market Data API.
 
-        Free tier uses IEX exchange data. Funded accounts get SIP (all exchanges).
-        No daily quota limit — can call for every ticker on every scan.
+        Uses SIP feed (all US exchanges) for daily/historical bars — free
+        accounts can access SIP data that's >15 minutes old. Daily bars
+        are always historical, so SIP works without a paid subscription.
+
+        This replaced the earlier IEX-only approach which only covered ~2-8%
+        of market volume, causing most tickers to return zero bars.
 
         Args:
             ticker: Stock symbol (e.g., "AAPL")
@@ -378,13 +382,17 @@ class AlpacaClient:
                 params={
                     "timeframe": timeframe,
                     "limit": limit,
-                    "feed": "iex",
                     "sort": "asc",
                 },
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("bars", [])
+            bars = data.get("bars") or []
+            if not bars:
+                log.info("Alpaca bars %s: 200 OK but empty bars (IEX has no data for this ticker)", ticker)
+            else:
+                log.debug("Alpaca bars %s: %d bars returned", ticker, len(bars))
+            return bars
         except httpx.HTTPStatusError as e:
             log.error("Alpaca bars error (%d): %s", e.response.status_code, ticker)
             return None
@@ -397,6 +405,8 @@ class AlpacaClient:
         Get latest snapshot for a ticker (most recent trade, quote, bars).
 
         Returns: latestTrade, latestQuote, minuteBar, dailyBar, prevDailyBar.
+        Note: Without Algo Trader Plus subscription, real-time SIP snapshots
+        may not work. Falls back gracefully if the endpoint errors.
         """
         if not self.is_configured:
             return None
@@ -406,7 +416,6 @@ class AlpacaClient:
         try:
             resp = await self._data_client.get(
                 f"{self.DATA_URL}/v2/stocks/{ticker}/snapshot",
-                params={"feed": "iex"},
             )
             resp.raise_for_status()
             return resp.json()
