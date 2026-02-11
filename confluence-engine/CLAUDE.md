@@ -2,44 +2,64 @@
 
 ## Project Overview
 
-Confluence Engine is a personal trading platform that identifies high-probability trade setups by detecting when multiple independent signal layers align on the same ticker. It is NOT a toy project — this will be used to trade real money.
+Vicuna (formerly Confluence Engine) is a personal trading platform that identifies high-probability trade setups by detecting when multiple independent signal layers align on the same ticker. It is NOT a toy project — this will be used to trade real money.
 
 ## Who Is Building This
 
 Chris — a financial controller / accountant with 20 years of finance experience. He understands markets, options, and financial data deeply but is learning to code via "vibe coding" with Claude. Explain technical decisions clearly. Don't assume deep software engineering knowledge, but don't dumb down the finance or trading concepts. Chris prefers step-by-step explanations built in large chunks.
 
+**IMPORTANT: Update this CLAUDE.md file at the end of every session with current state.**
+
 ## Tech Stack
 
 - **Backend:** Python 3.12+, FastAPI, SQLAlchemy (async), Pydantic v2
-- **Frontend:** Single HTML dashboard (vanilla JS + Tailwind CDN) served from FastAPI
+- **Frontend:** Single HTML dashboard (vanilla JS + Tailwind CDN) served from FastAPI — rebranded to "Vicuna"
 - **Database:** PostgreSQL 16+ (via Docker), Redis 7+ (via Docker)
 - **Task runner:** APScheduler for periodic scans
 - **Broker:** Alpaca API (paper trading first, then live)
-- **Data sources:** FMP API (free tier), Unusual Whales API (Phase 2), SEC EDGAR
-- **Containerization:** Docker Compose for PostgreSQL + Redis
+- **Data sources:** Alpaca (momentum bars), FMP API (VIX, insider), Unusual Whales API (options flow, GEX, vol surface, dark pool, short interest)
+- **Containerization:** Docker Compose for full stack (PostgreSQL + Redis + API)
 
-## Current State (v0.2.0)
+## Current State (v0.3.0 — Feb 2025)
 
-**Active signal layers: 3 of 8**
-1. Momentum / Technical (FMP free) — MA alignment, golden/death cross, trend strength, 52-week position, relative volume
-2. VIX Regime Filter (FMP free) — modifies signal weights, NOT scored directly
-3. Insider Trading (FMP free) — SEC Form 4 filings, cluster buying detection, C-suite weighting
+**All 8 signal layers are fully implemented:**
 
-**Stub layers (need subscriptions):**
-4. Options Flow (Unusual Whales ~$50/mo)
-5. GEX / Dealer Positioning (Unusual Whales)
-6. Volatility Surface (Unusual Whales)
-7. Dark Pool Activity (Unusual Whales)
-8. Short Interest (Unusual Whales)
+| # | Layer | Source | Weight | Status |
+|---|-------|--------|--------|--------|
+| 1 | Options Flow | Unusual Whales | 0.25 | ACTIVE (requires UW key) |
+| 2 | GEX / Dealer Positioning | Unusual Whales | 0.18 | ACTIVE (requires UW key) |
+| 3 | Dark Pool Activity | Unusual Whales | 0.15 | ACTIVE (requires UW key) |
+| 4 | Volatility Surface | Unusual Whales | 0.12 | ACTIVE (requires UW key) |
+| 5 | Momentum / Technical | Alpaca | 0.12 | ACTIVE (free) |
+| 6 | Insider Cluster Buying | FMP / UW | 0.10 | ACTIVE (free) |
+| 7 | Short Interest | Unusual Whales | 0.08 | ACTIVE (requires UW key) |
+| 8 | VIX Regime Filter | FMP | modifier | ACTIVE (free, not scored) |
 
 **Infrastructure:**
-- Dashboard: 6 tabs (Screener, Journal, Performance, Watchlist, Broker, System)
+- Dashboard: 5 tabs (Screener, Journal, Performance, Broker, System) — Watchlist tab removed
+- Flow gate: options_flow MUST agree with direction + GEX or volatility confirm before trade-worthy
 - Caching: In-memory result cache (zero API calls per page load)
-- Scheduler: 15-min scan interval (conserves FMP free tier quota)
+- Scheduler: 15-min scan interval (configurable via SCAN_INTERVAL)
+- Auto-journal: logs qualifying setups (60%+ conviction, 3+ layers) automatically
 - Trade journal: CRUD with P&L tracking
 - Broker: Alpaca paper trading integration (account, positions, orders)
 - System: FMP quota tracking, signal layer status panel
 - DB: Auto-creates tables on startup, graceful fallback if PostgreSQL not running
+- Universe: 35 default tickers in watchlist.yaml (mega-cap, high-momentum, blue chip, sector ETFs, memes)
+- Index filtering: SPXW, SPX, VIX etc. filtered from universe discovery
+- Direction-aware UI: green=bullish, red=bearish, yellow=dark pool conflict
+
+**Key changes from v0.2.0:**
+- Momentum layer switched from FMP to Alpaca (no quota limit, better data)
+- All 5 UW layers fully implemented (no longer stubs)
+- Frontend rebranded from "Confluence" to "Vicuna"
+- Watchlist tab removed — let the market show what's trading
+- Flow gate added — prevents trading against smart money
+- Auto-journal service added
+- Universe discovery with index product filtering
+- Direction-aware coloring throughout UI
+- Dark pool conflict warnings in flow gate details
+- UW 429 rate limiting handled with retry/backoff
 
 ## Code Standards
 
@@ -60,64 +80,76 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 5. **All scores are 0.0 to 1.0.** Direction is a separate enum (BULLISH/BEARISH/NEUTRAL). Never mix score and direction.
 6. **FMP free tier: 250 calls/day.** Use the /stable/ endpoints (not legacy /api/v3/). Cache aggressively.
 7. **Dashboard reads from cache, not live API.** The scheduler populates the cache; the dashboard reads it instantly.
+8. **Flow gate controls trade-worthiness.** Options flow must agree with dominant direction, plus at least one of GEX/volatility must confirm. Prevents trading against smart money.
+9. **All 8 processors run in parallel** via `asyncio.gather()`. If one fails, others complete unaffected.
+10. **Signal weights and thresholds live in `config/signals.yaml`**, not hardcoded.
 
 ## File Structure
 
 ```
 confluence-engine/
-├── CLAUDE.md                   # This file
-├── docker-compose.yml          # PostgreSQL 16 + Redis 7
+├── CLAUDE.md                   # This file — UPDATE EVERY SESSION
+├── docker-compose.yml          # PostgreSQL 16 + Redis 7 + API service
+├── Dockerfile                  # Python 3.12 slim, uvicorn
+├── start.sh                    # One-command Docker Compose startup
 ├── .env                        # API keys (gitignored)
 ├── .env.example                # Template for .env
 ├── config/
-│   └── watchlist.yaml          # Default watchlist (14 tickers)
+│   ├── signals.yaml            # Weights, confluence multipliers, regime mods, flow gate
+│   └── watchlist.yaml          # Default watchlist (35 tickers)
 ├── scripts/
-│   └── seed_watchlist.py       # Seed watchlist into DB
+│   ├── seed_watchlist.py       # Seed watchlist into DB
+│   └── migrate.py              # Auto-migrations
 ├── src/
 │   ├── config.py               # pydantic-settings config from .env
 │   ├── api/
 │   │   ├── main.py             # FastAPI app, lifespan, route mounting
-│   │   ├── dependencies.py     # Singleton init: FMP, Alpaca, processors, cache
+│   │   ├── dependencies.py     # Singleton init: FMP, Alpaca, UW, processors, cache
 │   │   └── routes/
-│   │       ├── confluence.py   # GET /confluence (from cache), GET /confluence/{ticker}
+│   │       ├── confluence.py   # GET /confluence (cache), POST /confluence/scan, GET /confluence/{ticker}
 │   │       ├── signals.py      # GET /signals/{ticker} (individual layer results)
 │   │       ├── watchlist.py    # CRUD for watchlist
 │   │       ├── trades.py       # Trade journal with P&L
 │   │       ├── broker.py       # Alpaca: account, positions, orders
-│   │       ├── system.py       # Status, quota, signal layers API
+│   │       ├── system.py       # Status, quota, signal layers, diagnostics
 │   │       └── regime.py       # GET /regime (VIX regime)
 │   ├── services/
-│   │   ├── confluence.py       # Core scoring engine (weighted + confluence multiplier)
-│   │   ├── cache.py            # In-memory result cache (ResultCache)
-│   │   └── scheduler.py        # APScheduler: periodic scans -> cache + DB history
+│   │   ├── confluence.py       # Core scoring engine (weighted + confluence multiplier + flow gate)
+│   │   ├── cache.py            # In-memory result cache (ResultCache, thread-safe)
+│   │   ├── scheduler.py        # APScheduler: periodic scans -> cache + DB + auto-journal
+│   │   └── auto_journal.py     # Auto-log trade setups when signals fire
 │   ├── signals/
 │   │   ├── base.py             # ABC, SignalResult, Direction, Regime, ConfluenceScore
-│   │   ├── momentum.py         # ACTIVE: price/volume technicals via FMP
-│   │   ├── vix_regime.py       # ACTIVE: VIX regime classification
-│   │   ├── insider.py          # ACTIVE: SEC Form 4 insider trading
-│   │   ├── options_flow.py     # STUB: needs Unusual Whales
-│   │   ├── gex.py              # STUB: needs Unusual Whales
-│   │   ├── volatility.py       # STUB: needs Unusual Whales
-│   │   ├── dark_pool.py        # STUB: needs Unusual Whales
-│   │   └── short_interest.py   # STUB: needs Unusual Whales
+│   │   ├── momentum.py         # ACTIVE: Alpaca bars → MA alignment, golden cross, volume
+│   │   ├── vix_regime.py       # ACTIVE: FMP VIX → regime classification (modifier only)
+│   │   ├── insider.py          # ACTIVE: FMP/UW Form 4 → cluster buying, C-suite weighting
+│   │   ├── options_flow.py     # ACTIVE: UW → sweep/block premium, bid/ask sentiment
+│   │   ├── gex.py              # ACTIVE: UW → dealer gamma exposure positioning
+│   │   ├── volatility.py       # ACTIVE: UW → IV rank, skew, term structure
+│   │   ├── dark_pool.py        # ACTIVE: UW → FINRA ATS accumulation/distribution
+│   │   └── short_interest.py   # ACTIVE: UW → SI%, days to cover, squeeze potential
 │   ├── models/
-│   │   └── tables.py           # SQLAlchemy models: Watchlist, Signal, Trade, etc.
+│   │   ├── base.py             # SQLAlchemy declarative base
+│   │   └── tables.py           # Watchlist, Signal, ConfluenceScoreRecord, Trade, Alert
 │   ├── utils/
-│   │   ├── data_providers.py   # FMPClient, AlpacaClient, UnusualWhalesClient
+│   │   ├── data_providers.py   # FMPClient, AlpacaClient, UnusualWhalesClient (all rate-limited)
 │   │   ├── rate_limiter.py     # Token bucket rate limiter
 │   │   └── db.py               # Async engine, session factory, create_tables()
 │   └── ui/
-│       └── dashboard.html      # Single-page dashboard (vanilla JS + Tailwind)
+│       └── dashboard.html      # Single-page dashboard (vanilla JS + Tailwind) — "Vicuna" branded
 ```
 
 ## Common Commands
 
 ```bash
-# Start infrastructure (PostgreSQL + Redis)
+# Start full stack (PostgreSQL + Redis + API)
 docker compose up -d
 
-# Run backend (from confluence-engine directory)
+# Run backend with hot reload (from confluence-engine directory)
 uvicorn src.api.main:app --reload --port 8000
+
+# Or use the one-command startup script
+./start.sh
 
 # Seed watchlist (creates tables + inserts tickers)
 python -m scripts.seed_watchlist
@@ -129,6 +161,27 @@ open http://localhost:8000
 open http://localhost:8000/docs
 ```
 
+## Configuration
+
+**Environment variables (.env):**
+- `FMP_API_KEY` — Financial Modeling Prep (free tier, 250 calls/day)
+- `UW_API_KEY` — Unusual Whales (powers 5 of 8 layers)
+- `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` — Alpaca paper/live trading
+- `ALPACA_BASE_URL` — `https://paper-api.alpaca.markets` (paper) or `https://api.alpaca.markets` (live)
+- `SCAN_INTERVAL` — seconds between scans (default 900 = 15 min)
+- `AUTO_TRADE_ENABLED` — auto-journal qualifying signals (default true)
+- `AUTO_TRADE_MIN_CONVICTION` — threshold for auto-journal (default 60)
+- `AUTO_TRADE_MIN_LAYERS` — min agreeing layers for auto-journal (default 3)
+- `LIVE_TRADING_ENABLED` — must be explicitly `true` for real orders (default false)
+
+**Signal config (config/signals.yaml):**
+- Signal weights (options_flow highest at 0.25, short_interest lowest at 0.08)
+- Confluence multiplier (1 layer=0.80x discount → 5 layers=1.50x max)
+- Regime modifiers (calm=trust bullish, crisis=favor bearish)
+- Flow gate config (primary=options_flow, secondary=gex+volatility)
+- Alert thresholds (conviction, premium, cluster window, squeeze detection)
+- Refresh intervals per layer
+
 ## Important Context
 
 - The "confluence multiplier" is central: more independent layers agreeing = higher conviction. This is the core value proposition.
@@ -136,5 +189,7 @@ open http://localhost:8000/docs
 - Options flow data is the most valuable single layer (requires Unusual Whales subscription).
 - The VIX regime filter is NOT a trade signal — it's a modifier that adjusts signal weights.
 - Cloud sandbox blocks outbound HTTP (FMP returns 403) — must test locally on Chris's Mac.
-- FMP free tier gets 402 on paid-only endpoints (technical indicators). The quote endpoint includes priceAvg50/priceAvg200, which is enough for momentum scoring.
+- FMP free tier gets 402 on paid-only endpoints. The quote endpoint includes priceAvg50/priceAvg200.
+- Momentum uses Alpaca bars (not FMP) — no quota limit, better historical data.
+- UW returns 429 when rate limited — handled with retry + exponential backoff.
 - When in doubt about finance/trading concepts, ask Chris — he knows finance better than most developers.
