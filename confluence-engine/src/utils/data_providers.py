@@ -483,7 +483,7 @@ class UnusualWhalesClient:
             headers={"Authorization": f"Bearer {api_key}"},
         )
         # UW Basic: 120 req/min = 2 req/sec steady state
-        self._limiter = RateLimiter(rate=2.0, max_tokens=5)
+        self._limiter = RateLimiter(rate=1.5, max_tokens=3)
         # Quota tracking
         self._call_count = 0
         self._error_count = 0
@@ -530,7 +530,12 @@ class UnusualWhalesClient:
                 self._call_count += 1
                 resp = await self._client.get(url, params=params)
                 if resp.status_code == 429:
-                    log.warning("UW rate limited (429): %s", path)
+                    if attempt < retries:
+                        wait = 2 ** (attempt + 1)  # 2s, 4s backoff
+                        log.warning("UW rate limited (429): %s — retrying in %ds", path, wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    log.warning("UW rate limited (429): %s — giving up after %d retries", path, retries)
                     return None
                 resp.raise_for_status()
                 data = resp.json()
