@@ -76,10 +76,10 @@ class MomentumProcessor(SignalProcessor):
         try:
             bars = await self._alpaca.get_bars(ticker, timeframe="1Day", limit=252)
             if not bars:
-                log.info("Momentum %s: no bars returned from Alpaca (IEX feed may lack data)", ticker)
+                log.info("Momentum %s: no bars returned from Alpaca", ticker)
                 return None
             if len(bars) < 20:
-                log.info("Momentum %s: only %d bars (need 20+) — IEX has limited history", ticker, len(bars))
+                log.info("Momentum %s: only %d bars (need 20+)", ticker, len(bars))
                 return None
 
             log.debug("Momentum %s: got %d daily bars", ticker, len(bars))

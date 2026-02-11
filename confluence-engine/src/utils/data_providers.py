@@ -382,6 +382,7 @@ class AlpacaClient:
                 params={
                     "timeframe": timeframe,
                     "limit": limit,
+                    "feed": "sip",
                     "sort": "asc",
                 },
             )
@@ -389,7 +390,7 @@ class AlpacaClient:
             data = resp.json()
             bars = data.get("bars") or []
             if not bars:
-                log.info("Alpaca bars %s: 200 OK but empty bars (IEX has no data for this ticker)", ticker)
+                log.info("Alpaca bars %s: 200 OK but empty bars", ticker)
             else:
                 log.debug("Alpaca bars %s: %d bars returned", ticker, len(bars))
             return bars
