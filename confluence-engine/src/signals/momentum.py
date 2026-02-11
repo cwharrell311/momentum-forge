@@ -52,15 +52,25 @@ class MomentumProcessor(SignalProcessor):
         return 0.12
 
     async def scan(self, tickers: list[str]) -> list[SignalResult]:
+        log.info("Momentum scanning %d tickers (Alpaca configured: %s)", len(tickers), self._alpaca.is_configured)
         results: list[SignalResult] = []
+        errors = 0
+        empty = 0
         for ticker in tickers:
             try:
                 result = await self.scan_single(ticker)
                 if result:
                     results.append(result)
+                else:
+                    empty += 1
             except Exception as e:
+                errors += 1
                 log.warning("Momentum scan failed for %s: %s", ticker, e)
                 continue
+        log.info(
+            "Momentum scan complete: %d signals, %d empty, %d errors (out of %d tickers)",
+            len(results), empty, errors, len(tickers),
+        )
         return results
 
     async def scan_single(self, ticker: str) -> SignalResult | None:

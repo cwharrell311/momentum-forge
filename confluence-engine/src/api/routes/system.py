@@ -43,9 +43,16 @@ class AutoJournalStatus(BaseModel):
     logged_this_session: list[str]  # Tickers already logged
 
 
+class AlpacaStatus(BaseModel):
+    configured: bool
+    mode: str  # "paper" or "live"
+    base_url: str
+
+
 class SystemStatus(BaseModel):
     fmp_quota: QuotaStatus
     uw_quota: ApiQuotaStatus | None
+    alpaca: AlpacaStatus | None
     cache_has_data: bool
     cache_age_seconds: float | None
     db_connected: bool
@@ -73,7 +80,7 @@ async def system_status():
     Shows FMP API quota remaining, cache freshness, and DB connectivity.
     Check this if signals aren't updating — usually means quota is exhausted.
     """
-    from src.api.dependencies import get_cache, get_fmp_client, get_processors, get_uw_client
+    from src.api.dependencies import get_alpaca_client, get_cache, get_fmp_client, get_processors, get_uw_client
 
     # FMP quota
     fmp = get_fmp_client()
@@ -119,6 +126,16 @@ async def system_status():
     except Exception:
         pass
 
+    # Alpaca status
+    alpaca = get_alpaca_client()
+    alpaca_status = None
+    if alpaca:
+        alpaca_status = AlpacaStatus(
+            configured=alpaca.is_configured,
+            mode="paper" if alpaca.is_paper else "LIVE",
+            base_url=alpaca.base_url,
+        )
+
     # Auto-journal status
     from src.config import get_settings as _get_settings
     from src.services.auto_journal import get_session_log
@@ -134,6 +151,7 @@ async def system_status():
     return SystemStatus(
         fmp_quota=QuotaStatus(**quota),
         uw_quota=uw_quota,
+        alpaca=alpaca_status,
         cache_has_data=cache.has_data,
         cache_age_seconds=round(cache_age, 1) if cache_age is not None else None,
         db_connected=db_ok,
@@ -149,7 +167,7 @@ LAYER_REGISTRY: list[dict] = [
         "name": "momentum",
         "display_name": "Momentum / Technical",
         "phase": 1,
-        "data_source": "FMP (free tier)",
+        "data_source": "Alpaca (no quota limit)",
         "description": "Price trend via MA alignment, relative volume, 52-week position, golden/death cross detection",
         "refresh_seconds": 300,
     },

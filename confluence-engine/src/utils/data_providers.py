@@ -372,9 +372,16 @@ class AlpacaClient:
             c (close), v (volume), n (trade count), vw (VWAP).
         """
         if not self.is_configured:
+            log.warning("Alpaca bars %s: skipped — client not configured", ticker)
             return None
 
         await self._limiter.acquire()
+
+        # Explicit start date ensures Alpaca returns recent bars.
+        # Without it, some API versions return empty or very old data.
+        from datetime import datetime, timedelta, timezone
+
+        start_date = (datetime.now(timezone.utc) - timedelta(days=int(limit * 1.5))).strftime("%Y-%m-%dT00:00:00Z")
 
         try:
             resp = await self._data_client.get(
@@ -382,6 +389,7 @@ class AlpacaClient:
                 params={
                     "timeframe": timeframe,
                     "limit": limit,
+                    "start": start_date,
                     "feed": "sip",
                     "sort": "asc",
                 },
@@ -390,12 +398,17 @@ class AlpacaClient:
             data = resp.json()
             bars = data.get("bars") or []
             if not bars:
-                log.info("Alpaca bars %s: 200 OK but empty bars", ticker)
+                log.info("Alpaca bars %s: 200 OK but empty bars (start=%s)", ticker, start_date)
             else:
                 log.debug("Alpaca bars %s: %d bars returned", ticker, len(bars))
             return bars
         except httpx.HTTPStatusError as e:
-            log.error("Alpaca bars error (%d): %s", e.response.status_code, ticker)
+            body = ""
+            try:
+                body = e.response.text[:200]
+            except Exception:
+                pass
+            log.error("Alpaca bars error (%d) for %s: %s", e.response.status_code, ticker, body)
             return None
         except httpx.RequestError as e:
             log.error("Alpaca bars request failed for %s: %s", ticker, e)
