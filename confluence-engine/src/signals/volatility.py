@@ -98,7 +98,7 @@ class VolatilityProcessor(SignalProcessor):
 
             analysis = self._analyze_volatility(overview or {}, chain)
 
-            if analysis["iv_rank"] is None and not chain:
+            if analysis["iv_rank"] is None and analysis["current_iv"] is None and not chain:
                 return None
 
             direction = analysis["direction"]
@@ -144,22 +144,60 @@ class VolatilityProcessor(SignalProcessor):
         elif isinstance(inner, list):
             inner = {}
 
-        # Try to get IV data from overview first (less API calls)
+        # Log response keys once to help diagnose field name mismatches
+        if overview:
+            log.debug("Volatility overview keys: %s", list(overview.keys())[:15])
+        if inner and inner is not overview:
+            log.debug("Volatility inner keys: %s", list(inner.keys())[:15])
+        if chain and isinstance(chain, list) and chain:
+            log.debug("Volatility chain[0] keys: %s", list(chain[0].keys())[:20])
+
+        # Try to get IV data from overview — UW uses many possible field names
         iv_rank = self._safe_float(
             overview.get("iv_rank")
             or overview.get("ivRank")
+            or overview.get("iv_percentile")
             or inner.get("iv_rank")
+            or inner.get("ivRank")
+            or inner.get("iv_percentile")
+            or inner.get("rank")
         )
         iv_percentile = self._safe_float(
             overview.get("iv_percentile")
+            or overview.get("ivPercentile")
             or inner.get("iv_percentile")
+            or inner.get("ivPercentile")
         )
         current_iv = self._safe_float(
             overview.get("implied_volatility")
             or overview.get("iv30")
+            or overview.get("iv")
+            or overview.get("implied_volatility_30d")
             or inner.get("implied_volatility")
             or inner.get("iv30")
+            or inner.get("iv")
+            or inner.get("implied_volatility_30d")
         )
+
+        # Extract 52-week IV high/low for IV rank calculation
+        iv_high = self._safe_float(
+            overview.get("iv_1y_high") or overview.get("iv_high")
+            or overview.get("ivHigh") or overview.get("iv_52w_high")
+            or inner.get("iv_1y_high") or inner.get("iv_high")
+            or inner.get("ivHigh") or inner.get("iv_52w_high")
+        )
+        iv_low = self._safe_float(
+            overview.get("iv_1y_low") or overview.get("iv_low")
+            or overview.get("ivLow") or overview.get("iv_52w_low")
+            or inner.get("iv_1y_low") or inner.get("iv_low")
+            or inner.get("ivLow") or inner.get("iv_52w_low")
+        )
+
+        # Calculate IV rank from high/low if not directly available
+        if not iv_rank and current_iv and iv_high > iv_low:
+            iv_rank = ((current_iv - iv_low) / (iv_high - iv_low)) * 100
+            log.debug("Computed IV rank from high/low: %.1f (IV=%.4f, H=%.4f, L=%.4f)",
+                       iv_rank, current_iv, iv_high, iv_low)
 
         # If no IV data from overview, calculate from chain
         put_ivs: list[float] = []
@@ -172,7 +210,11 @@ class VolatilityProcessor(SignalProcessor):
             # Sort chain by expiry to identify near/far month
             expiries: set[str] = set()
             for contract in chain:
-                exp = contract.get("expiry") or contract.get("expiration_date") or ""
+                exp = (
+                    contract.get("expiry") or contract.get("expiration_date")
+                    or contract.get("expiration") or contract.get("expires")
+                    or ""
+                )
                 if exp:
                     expiries.add(exp)
 
@@ -181,17 +223,42 @@ class VolatilityProcessor(SignalProcessor):
             far_expiries = set(sorted_expiries[-2:]) if len(sorted_expiries) >= 4 else set()
 
             for contract in chain:
+                # Try many possible IV field names — UW format varies
                 iv = self._safe_float(
                     contract.get("implied_volatility")
                     or contract.get("iv")
                     or contract.get("impliedVolatility")
+                    or contract.get("mid_iv")
+                    or contract.get("ask_iv")
+                    or contract.get("bid_iv")
                 )
+                if not iv:
+                    # Try greeks sub-object
+                    greeks = contract.get("greeks")
+                    if isinstance(greeks, dict):
+                        iv = self._safe_float(
+                            greeks.get("implied_volatility")
+                            or greeks.get("iv")
+                            or greeks.get("mid_iv")
+                        )
                 if iv <= 0 or iv > 10:  # Sanity check (IV > 1000% is noise)
                     continue
 
                 all_ivs.append(iv)
-                opt_type = (contract.get("option_type") or contract.get("put_call") or "").lower()
-                exp = contract.get("expiry") or contract.get("expiration_date") or ""
+                opt_type = (
+                    contract.get("option_type") or contract.get("put_call")
+                    or contract.get("type") or contract.get("is_call")
+                    or ""
+                )
+                # Handle boolean is_call field
+                if isinstance(opt_type, bool):
+                    opt_type = "call" if opt_type else "put"
+                opt_type = str(opt_type).lower()
+                exp = (
+                    contract.get("expiry") or contract.get("expiration_date")
+                    or contract.get("expiration") or contract.get("expires")
+                    or ""
+                )
 
                 if opt_type in ("put", "p"):
                     put_ivs.append(iv)
@@ -205,6 +272,12 @@ class VolatilityProcessor(SignalProcessor):
 
             if not current_iv and all_ivs:
                 current_iv = sum(all_ivs) / len(all_ivs)
+
+            log.debug(
+                "Volatility chain stats: %d contracts, %d with IV, %d puts, %d calls, %d near, %d far",
+                len(chain), len(all_ivs), len(put_ivs), len(call_ivs),
+                len(near_month_ivs), len(far_month_ivs),
+            )
 
         # Convert IV rank to 0-100 if it's in 0-1 format
         if iv_rank and iv_rank <= 1.0:
@@ -241,7 +314,8 @@ class VolatilityProcessor(SignalProcessor):
         else:
             term_structure = "unknown"
 
-        # Vol regime classification
+        # Vol regime classification — use iv_rank if available, fall back to
+        # absolute IV level (less precise but better than "unknown")
         if iv_rank and iv_rank > 0:
             if iv_rank > 80:
                 vol_regime = "high"
@@ -255,6 +329,23 @@ class VolatilityProcessor(SignalProcessor):
             else:
                 vol_regime = "low"
                 options_are = "cheap"
+        elif current_iv and current_iv > 0:
+            # Fallback: estimate from absolute IV level
+            # General thresholds: <20% low, 20-40% normal, 40-60% elevated, >60% high
+            iv_pct = current_iv if current_iv > 1 else current_iv * 100
+            if iv_pct > 60:
+                vol_regime = "high"
+                options_are = "expensive"
+            elif iv_pct > 40:
+                vol_regime = "elevated"
+                options_are = "moderately_priced"
+            elif iv_pct > 20:
+                vol_regime = "normal"
+                options_are = "fairly_priced"
+            else:
+                vol_regime = "low"
+                options_are = "cheap"
+            log.debug("Vol regime from absolute IV (%.1f%%): %s", iv_pct, vol_regime)
         else:
             vol_regime = "unknown"
             options_are = "unknown"
@@ -268,17 +359,24 @@ class VolatilityProcessor(SignalProcessor):
         # Very high IV = options are expensive = vol likely to contract
         if iv_rank:
             if iv_rank < 15:
-                # Very low IV = vol expansion coming, good for buyers
-                # Slightly bullish bias (low fear environment)
                 bull_points += 1.5
             elif iv_rank < 25:
                 bull_points += 0.75
             elif iv_rank > 85:
-                # Very high IV = vol contraction likely, bearish for premium buyers
-                # Also indicates elevated fear (bearish)
                 bear_points += 1.5
             elif iv_rank > 75:
                 bear_points += 0.75
+        elif current_iv and current_iv > 0:
+            # Fallback scoring from absolute IV level (reduced weight: 1 pt max)
+            iv_pct = current_iv if current_iv > 1 else current_iv * 100
+            if iv_pct > 70:
+                bear_points += 1.0  # Very high vol = fear = bearish lean
+            elif iv_pct > 50:
+                bear_points += 0.5  # Elevated vol = slight bearish
+            elif iv_pct < 15:
+                bull_points += 1.0  # Very low vol = complacency = bullish
+            elif iv_pct < 25:
+                bull_points += 0.5  # Low vol = slight bullish
 
         # Put/call skew (1.5 pts)
         if skew_direction == "put_heavy":
@@ -318,6 +416,8 @@ class VolatilityProcessor(SignalProcessor):
         confidence = 0.5
         if iv_rank and iv_rank > 0:
             confidence += 0.15
+        elif current_iv and current_iv > 0:
+            confidence += 0.10  # Partial credit for having IV data
         if chain and len(chain) > 20:
             confidence += 0.15
         if put_ivs and call_ivs:
