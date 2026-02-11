@@ -31,6 +31,7 @@ class ScanResult:
     regime: Regime = Regime.ELEVATED
     scanned_tickers: int = 0
     timestamp: datetime = field(default_factory=_utcnow)
+    dp_regime: str | None = None  # "market_wide" when DP diverges across >60% of signals
 
 
 class ResultCache:
@@ -56,6 +57,7 @@ class ResultCache:
         scores: list[ConfluenceScore],
         regime: Regime,
         scanned_tickers: int,
+        dp_regime: str | None = None,
     ) -> None:
         """Store new scan results. Called by the scheduler after each scan."""
         async with self._lock:
@@ -64,6 +66,7 @@ class ResultCache:
                 regime=regime,
                 scanned_tickers=scanned_tickers,
                 timestamp=_utcnow(),
+                dp_regime=dp_regime,
             )
 
             # Also store individual signals per ticker for history

@@ -664,6 +664,7 @@
         let lastCacheAge = null;
         let currentScores = [];       // Store latest scores for trade modal
         let closeTradeId = null;      // Track which trade is being closed
+        let _dpRegime = null;         // "market_wide" when DP diverges across >60% of signals
 
         // ═══════════════════════════════════════════════════════
         // TRADE THRESHOLD — localStorage persisted
@@ -795,11 +796,26 @@
         }
 
         // ═══════════════════════════════════════════════════════
-        // ALERTS
+        // DARK POOL REGIME BANNER
         // ═══════════════════════════════════════════════════════
 
-        function renderAlerts(scores) {
-            // Removed — alerts banner was redundant with the main screener table
+        function updateDpBanner(dpRegime) {
+            const banner = document.getElementById('alerts-banner');
+            if (dpRegime === 'market_wide') {
+                banner.innerHTML = `
+                    <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg px-4 py-3 mb-4 flex items-center gap-3">
+                        <span class="text-amber-400 text-lg">&#9888;</span>
+                        <div>
+                            <div class="text-amber-300 text-sm font-semibold">Dark pools diverging from options flow market-wide</div>
+                            <div class="text-amber-400/60 text-xs">Institutions are hedging (buying stock + buying puts). Individual CAUTION badges suppressed — this is a market condition, not ticker-specific.</div>
+                        </div>
+                    </div>
+                `;
+                banner.classList.remove('hidden');
+            } else {
+                banner.innerHTML = '';
+                banner.classList.add('hidden');
+            }
         }
 
         // ═══════════════════════════════════════════════════════
@@ -844,9 +860,12 @@
                 lastCacheAge = data.cache_age_seconds;
                 updateCacheDisplay(data.cache_age_seconds);
 
+                // Track market-wide dark pool divergence
+                _dpRegime = data.dp_regime || null;
+                updateDpBanner(_dpRegime);
+
                 currentScores = data.scores || [];
                 renderTable(currentScores);
-                renderAlerts(currentScores);
 
                 document.getElementById('loading').classList.add('hidden');
                 if (currentScores.length > 0) {
@@ -942,7 +961,8 @@
 
                 const detailId = `detail-${score.ticker}`;
                 const layerDots = renderLayerDots(score.active_layers, score.total_layers);
-                const hasDpConflict = worthy && (score.gate_details || '').includes('WARNING');
+                // Per-ticker CAUTION only when dark pool conflict is ticker-specific (not market-wide)
+                const hasDpConflict = worthy && _dpRegime !== 'market_wide' && (score.gate_details || '').includes('WARNING');
                 const badgeStyle = hasDpConflict ? 'caution' : (score.direction === 'bearish' ? 'bearish' : 'bullish');
                 const badgeText = hasDpConflict ? 'Caution' : 'Trade Worthy';
                 const worthyBadge = worthy ? `<span class="trade-badge ${badgeStyle} ml-2">${badgeText}</span>` : '';
@@ -1222,7 +1242,7 @@
             if (score.gate_details) {
                 const isWorthy = score.trade_worthy;
                 const isBearish = score.direction === 'bearish';
-                const hasDpWarn = (score.gate_details || '').includes('WARNING');
+                const hasDpWarn = _dpRegime !== 'market_wide' && (score.gate_details || '').includes('WARNING');
                 let gateColor, gateIcon;
                 if (!isWorthy) {
                     gateColor = 'border-red-600/40 bg-red-900/20 text-red-400';

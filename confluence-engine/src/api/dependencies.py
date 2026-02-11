@@ -79,8 +79,10 @@ def init_app(
         base_url=alpaca_base_url or "https://paper-api.alpaca.markets",
     )
 
-    # ── FMP-powered processors (free tier, always active) ──
-    momentum = MomentumProcessor(fmp_client=_fmp_client)
+    # ── Alpaca-powered processors (no quota limit) ──
+    momentum = MomentumProcessor(alpaca_client=_alpaca_client)
+
+    # ── FMP-powered processors (free tier — now only used for VIX) ──
     vix = VixRegimeProcessor(fmp_client=_fmp_client)
     insider = InsiderProcessor(fmp_client=_fmp_client, uw_client=_uw_client)
     _vix_processor = vix
@@ -92,10 +94,10 @@ def init_app(
     dark_pool = DarkPoolProcessor(uw_client=_uw_client)
     short_interest = ShortInterestProcessor(uw_client=_uw_client)
 
-    # All 8 processors — UW ones return empty results if not configured
+    # All 8 processors — UW/Alpaca ones return empty results if not configured
     _processors = [
-        momentum,           # FMP free tier
-        vix,                # FMP free tier (regime filter, not scored)
+        momentum,           # Alpaca market data (no quota limit)
+        vix,                # FMP free tier (regime filter, not scored — 1 call per 15min)
         insider,            # UW primary, FMP fallback
         options_flow,       # UW Basic ($150/mo) — highest weight
         gex,                # UW Basic

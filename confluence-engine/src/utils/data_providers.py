@@ -214,30 +214,43 @@ class FMPClient:
 
 class AlpacaClient:
     """
-    Alpaca Trading API client.
+    Alpaca Trading + Market Data API client.
 
     Supports both paper trading and live trading. Paper trading is FREE
     and uses a separate base URL (paper-api.alpaca.markets).
+
+    Market data uses data.alpaca.markets (IEX free, SIP with funded account).
+    No daily quota limit — replaces FMP for price/volume/technical data.
 
     Features:
     - Get account info (buying power, equity, cash)
     - List current positions
     - Place market/limit orders
     - Get order status and cancel orders
+    - Get historical bars (daily, hourly, minute)
+    - Get latest snapshots (price, quote, volume)
 
     Docs: https://docs.alpaca.markets/reference
     """
+
+    DATA_URL = "https://data.alpaca.markets"
 
     def __init__(self, api_key: str, secret_key: str, base_url: str = "https://paper-api.alpaca.markets"):
         self.api_key = api_key
         self.secret_key = secret_key
         self.base_url = base_url.rstrip("/")
+        _auth_headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": secret_key,
+        }
         self._client = httpx.AsyncClient(
             timeout=30.0,
-            headers={
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": secret_key,
-            },
+            headers=_auth_headers,
+        )
+        # Separate client for market data API (different base URL)
+        self._data_client = httpx.AsyncClient(
+            timeout=30.0,
+            headers=_auth_headers,
         )
         self._limiter = RateLimiter(rate=3.0, max_tokens=5)
 
@@ -331,9 +344,83 @@ class AlpacaClient:
         """Close an entire position for a ticker (sell all shares)."""
         return await self._request("DELETE", f"positions/{ticker}")
 
+    # ── Market Data API ──────────────────────────────────────────
+
+    async def get_bars(
+        self,
+        ticker: str,
+        timeframe: str = "1Day",
+        limit: int = 252,
+    ) -> list[dict] | None:
+        """
+        Get historical price bars from Alpaca Market Data API.
+
+        Free tier uses IEX exchange data. Funded accounts get SIP (all exchanges).
+        No daily quota limit — can call for every ticker on every scan.
+
+        Args:
+            ticker: Stock symbol (e.g., "AAPL")
+            timeframe: Bar size — "1Day", "1Hour", "1Min", etc.
+            limit: Number of bars to fetch (max 10000, default 252 = 1 year)
+
+        Returns:
+            List of bars with: t (timestamp), o (open), h (high), l (low),
+            c (close), v (volume), n (trade count), vw (VWAP).
+        """
+        if not self.is_configured:
+            return None
+
+        await self._limiter.acquire()
+
+        try:
+            resp = await self._data_client.get(
+                f"{self.DATA_URL}/v2/stocks/{ticker}/bars",
+                params={
+                    "timeframe": timeframe,
+                    "limit": limit,
+                    "feed": "iex",
+                    "sort": "asc",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("bars", [])
+        except httpx.HTTPStatusError as e:
+            log.error("Alpaca bars error (%d): %s", e.response.status_code, ticker)
+            return None
+        except httpx.RequestError as e:
+            log.error("Alpaca bars request failed for %s: %s", ticker, e)
+            return None
+
+    async def get_snapshot(self, ticker: str) -> dict | None:
+        """
+        Get latest snapshot for a ticker (most recent trade, quote, bars).
+
+        Returns: latestTrade, latestQuote, minuteBar, dailyBar, prevDailyBar.
+        """
+        if not self.is_configured:
+            return None
+
+        await self._limiter.acquire()
+
+        try:
+            resp = await self._data_client.get(
+                f"{self.DATA_URL}/v2/stocks/{ticker}/snapshot",
+                params={"feed": "iex"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            log.error("Alpaca snapshot error (%d): %s", e.response.status_code, ticker)
+            return None
+        except httpx.RequestError as e:
+            log.error("Alpaca snapshot request failed for %s: %s", ticker, e)
+            return None
+
     async def close(self) -> None:
-        """Shut down the HTTP client."""
+        """Shut down both HTTP clients (trading + market data)."""
         await self._client.aclose()
+        await self._data_client.aclose()
 
 
 class UnusualWhalesClient:

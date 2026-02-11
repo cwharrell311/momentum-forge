@@ -231,6 +231,39 @@ async def trade_summary():
         )
 
 
+@router.post("/close-stale")
+async def close_stale_trades():
+    """
+    Close all open auto-journal trades that have quantity=0 (signal-only entries).
+
+    These are entries the auto-journal created to record a signal, but no
+    actual position was taken. They show up as "open" because they have no
+    exit_price, cluttering the stats box. This cleans them up.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(Trade).where(
+                Trade.exit_price.is_(None),
+                Trade.quantity == 0,
+            )
+        )
+        stale = result.scalars().all()
+
+        closed_count = 0
+        for trade in stale:
+            trade.exit_price = trade.entry_price or 0
+            trade.exit_at = datetime.utcnow()
+            trade.pnl = 0.0
+            if trade.notes:
+                trade.notes += "\n[AUTO-CLOSED] Signal-only entry, no position taken."
+            else:
+                trade.notes = "[AUTO-CLOSED] Signal-only entry, no position taken."
+            closed_count += 1
+
+        await session.commit()
+        return {"status": "ok", "closed": closed_count}
+
+
 @router.get("/{trade_id}", response_model=TradeResponse)
 async def get_trade(trade_id: int):
     """Get a single trade by ID."""

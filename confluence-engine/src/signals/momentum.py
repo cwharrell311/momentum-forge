@@ -1,15 +1,18 @@
 """
 Momentum / Technical Signal Processor
 
-Uses ONLY the FMP quote endpoint (free tier) to score momentum.
-The quote response includes price, 50/200 day moving averages,
-volume, average volume, and 52-week range — everything we need
-for a solid momentum signal with just ONE API call per ticker.
+Uses Alpaca Market Data API (free tier, IEX exchange) to score technical
+momentum from historical daily bars. One API call per ticker returns up
+to 252 trading days of data — enough to calculate 200-day SMA, RSI,
+52-week range, and relative volume.
+
+No daily quota limit. Replaces the earlier FMP implementation that was
+capped at 250 calls/day (burned through in a single scan of 83 tickers).
 
 Scoring components (max 6 points bull or bear):
 - Moving average alignment (price vs 50-day vs 200-day SMA)     → 2 pts
 - Golden/death cross (50 SMA vs 200 SMA relationship)           → 1 pt
-- Relative volume (current vs average)                           → 1 pt
+- Relative volume (current vs 20-day average)                    → 1 pt
 - Price position in 52-week range                                → 1 pt
 - Daily price change direction and magnitude                     → 0.5 pt
 - Trend strength (distance from key SMAs)                        → 0.5 pt
@@ -22,19 +25,19 @@ from taking flow signals that fight the trend.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.signals.base import Direction, SignalProcessor, SignalResult
-from src.utils.data_providers import FMPClient
+from src.utils.data_providers import AlpacaClient
 
 log = logging.getLogger(__name__)
 
 
 class MomentumProcessor(SignalProcessor):
-    """Technical momentum signal processor using FMP free tier quote data."""
+    """Technical momentum signal processor using Alpaca market data (no quota limit)."""
 
-    def __init__(self, fmp_client: FMPClient):
-        self._fmp = fmp_client
+    def __init__(self, alpaca_client: AlpacaClient):
+        self._alpaca = alpaca_client
 
     @property
     def name(self) -> str:
@@ -62,16 +65,21 @@ class MomentumProcessor(SignalProcessor):
 
     async def scan_single(self, ticker: str) -> SignalResult | None:
         """
-        Score momentum from a single quote API call.
+        Score momentum from Alpaca daily bars.
 
-        The FMP quote endpoint returns:
-        - price, priceAvg50, priceAvg200 (moving averages)
-        - volume, avgVolume (volume comparison)
-        - yearHigh, yearLow (52-week range)
-        - changesPercentage (daily change)
+        Fetches 252 trading days (1 year) and calculates:
+        - Current price, daily change %
+        - 50-day and 200-day simple moving averages
+        - 52-week high and low
+        - Volume vs 20-day average volume
         """
         try:
-            quote = await self._fmp.get_quote(ticker)
+            bars = await self._alpaca.get_bars(ticker, timeframe="1Day", limit=252)
+            if not bars or len(bars) < 20:
+                return None
+
+            # Convert raw bars into the quote dict the scoring engine expects
+            quote = self._bars_to_quote(bars)
             if not quote:
                 return None
 
@@ -96,7 +104,7 @@ class MomentumProcessor(SignalProcessor):
                 direction=direction,
                 strength=strength,
                 confidence=0.7,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 metadata={
                     "price": quote.get("price"),
                     "change_pct": quote.get("changesPercentage"),
@@ -118,6 +126,55 @@ class MomentumProcessor(SignalProcessor):
         except Exception as e:
             log.error("Momentum analysis failed for %s: %s", ticker, e)
             return None
+
+    def _bars_to_quote(self, bars: list[dict]) -> dict | None:
+        """
+        Convert Alpaca daily bars into the quote format the scoring engine expects.
+
+        Calculates SMAs, volume averages, and 52-week range from raw OHLCV data.
+        This lets us keep the exact same _score_components() logic — just a
+        different data source feeding the same scoring algorithm.
+        """
+        if not bars:
+            return None
+
+        closes = [b["c"] for b in bars]
+        highs = [b["h"] for b in bars]
+        lows = [b["l"] for b in bars]
+        volumes = [b["v"] for b in bars]
+
+        price = closes[-1]
+
+        # Daily change %
+        if len(closes) >= 2:
+            prev_close = closes[-2]
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+        else:
+            change_pct = 0
+
+        # Simple moving averages
+        sma_50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else None
+        sma_200 = sum(closes[-200:]) / 200 if len(closes) >= 200 else None
+
+        # 52-week high/low (all bars we have, up to 252)
+        year_high = max(highs)
+        year_low = min(lows)
+
+        # Volume: current day vs 20-day average
+        volume = volumes[-1] if volumes else 0
+        vol_window = volumes[-20:] if len(volumes) >= 20 else volumes
+        avg_volume = sum(vol_window) / len(vol_window) if vol_window else 1
+
+        return {
+            "price": round(price, 2),
+            "changesPercentage": round(change_pct, 2),
+            "priceAvg50": round(sma_50, 2) if sma_50 else None,
+            "priceAvg200": round(sma_200, 2) if sma_200 else None,
+            "yearHigh": round(year_high, 2),
+            "yearLow": round(year_low, 2),
+            "volume": volume,
+            "avgVolume": round(avg_volume),
+        }
 
     def _score_components(self, quote: dict) -> dict:
         """
@@ -165,8 +222,6 @@ class MomentumProcessor(SignalProcessor):
                 bear_score += 1
 
         # ── Golden/death cross detection (50 SMA vs 200 SMA) ──
-        # Golden cross: 50 SMA > 200 SMA (bullish structural trend)
-        # Death cross: 50 SMA < 200 SMA (bearish structural trend)
         if sma_50 and sma_200 and sma_200 > 0:
             sma_spread = (sma_50 - sma_200) / sma_200
             if sma_50 > sma_200:
@@ -180,11 +235,9 @@ class MomentumProcessor(SignalProcessor):
             components["ma_cross"] = "unknown"
 
         # ── Trend strength (how far price is from 50 SMA) ──
-        # Strong trends pull price far from the moving average
         if price and sma_50 and sma_50 > 0:
             distance_pct = (price - sma_50) / sma_50 * 100
             components["trend_strength"] = round(distance_pct, 2)
-            # >5% above 50 SMA = strong uptrend
             if distance_pct > 5:
                 bull_score += 0.5
             elif distance_pct < -5:
@@ -196,7 +249,6 @@ class MomentumProcessor(SignalProcessor):
         rel_vol = volume / avg_volume if avg_volume and avg_volume > 0 else 1.0
         components["relative_volume"] = round(rel_vol, 2)
         if rel_vol > 1.5:
-            # High volume confirms whatever direction we're seeing
             if bull_score > bear_score:
                 bull_score += 1
             elif bear_score > bull_score:
@@ -209,11 +261,11 @@ class MomentumProcessor(SignalProcessor):
             pct = (price - year_low) / (year_high - year_low)
             components["price_vs_52w"] = round(pct, 2)
             if pct > 0.85:
-                bull_score += 1      # Near all-time highs = strong momentum
+                bull_score += 1
             elif pct > 0.7:
                 bull_score += 0.5
             elif pct < 0.15:
-                bear_score += 1      # Near 52-week lows = strong weakness
+                bear_score += 1
             elif pct < 0.3:
                 bear_score += 0.5
 

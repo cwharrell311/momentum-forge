@@ -53,6 +53,7 @@ class ConfluenceListResponse(BaseModel):
     scores: list[ConfluenceResponse]
     scanned_tickers: int
     cache_age_seconds: int = 0
+    dp_regime: str | None = None  # "market_wide" when dark pools diverge across >60% of signals
 
 
 # ── Helper ──
@@ -110,6 +111,7 @@ async def get_confluence():
         scanned_tickers=result.scanned_tickers,
         cache_age_seconds=int(cache.age_seconds),
         scores=[_format_score(s) for s in result.scores],
+        dp_regime=result.dp_regime,
     )
 
 

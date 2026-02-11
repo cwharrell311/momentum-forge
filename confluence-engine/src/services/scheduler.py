@@ -52,6 +52,7 @@ async def run_confluence_scan() -> None:
             scores=scores,
             regime=regime,
             scanned_tickers=len(tickers),
+            dp_regime=engine.dp_divergence,
         )
 
         # Log top results

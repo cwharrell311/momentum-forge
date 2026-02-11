@@ -96,6 +96,11 @@ class ConfluenceEngine:
         # Returns list of ConfluenceScore sorted by conviction descending
     """
 
+    # Threshold: if more than 60% of trade-worthy signals have dark pool
+    # conflict, it's a market-wide condition (institutional hedging), not
+    # a ticker-specific warning. Show a banner instead of per-ticker CAUTION.
+    DP_MARKET_WIDE_THRESHOLD = 0.60
+
     def __init__(
         self,
         processors: list[SignalProcessor],
@@ -115,6 +120,52 @@ class ConfluenceEngine:
         self._signal_processors = [
             p for p in processors if p.name != "vix_regime"
         ]
+
+        # Market-wide dark pool divergence status (set by scan_all post-processing)
+        self._dp_divergence: str | None = None
+
+    @property
+    def dp_divergence(self) -> str | None:
+        """
+        Market-wide dark pool divergence status (set after scan_all).
+
+        Returns:
+            "market_wide" — dark pools disagree with flow across >60% of signals.
+                           This is institutional hedging, not a per-ticker concern.
+            None — dark pool conflicts are ticker-specific (show per-ticker CAUTION).
+        """
+        return self._dp_divergence
+
+    def _detect_dp_divergence(self, scores: list[ConfluenceScore]) -> str | None:
+        """
+        Check if dark pool conflict is market-wide or ticker-specific.
+
+        When >60% of trade-worthy signals have DP conflict, it means institutions
+        are hedging across the board — not something you can act on per-ticker.
+        Strip per-ticker warnings and return "market_wide" so the UI shows a banner.
+        """
+        trade_worthy = [s for s in scores if s.trade_worthy]
+        if not trade_worthy:
+            return None
+
+        dp_conflict_count = sum(
+            1 for s in trade_worthy if "WARNING: dark pool" in s.gate_details
+        )
+        ratio = dp_conflict_count / len(trade_worthy)
+
+        if ratio > self.DP_MARKET_WIDE_THRESHOLD:
+            # Market-wide condition — strip per-ticker DP warnings
+            for s in scores:
+                if s.trade_worthy and " | WARNING:" in s.gate_details:
+                    s.gate_details = s.gate_details.split(" | WARNING:")[0]
+            log.info(
+                "Dark pool divergence is MARKET-WIDE (%d/%d = %.0f%% of trade-worthy signals) "
+                "— stripping per-ticker CAUTION, showing regime banner instead",
+                dp_conflict_count, len(trade_worthy), ratio * 100,
+            )
+            return "market_wide"
+
+        return None
 
     async def get_current_regime(self) -> Regime:
         """Determine current market regime from VIX data."""
@@ -173,6 +224,13 @@ class ConfluenceEngine:
 
         # Sort by conviction descending
         scores.sort(key=lambda s: s.conviction, reverse=True)
+
+        # ── Post-processing: smart dark pool divergence detection ──
+        # If >60% of trade-worthy signals have DP conflict, it's a market-wide
+        # condition (institutional hedging) — not useful as per-ticker warning.
+        # Strip individual warnings and flag it as a regime-level note.
+        self._dp_divergence = self._detect_dp_divergence(scores)
+
         return scores
 
     async def scan_single(self, ticker: str) -> ConfluenceScore | None:
