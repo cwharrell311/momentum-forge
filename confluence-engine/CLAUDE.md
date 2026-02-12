@@ -20,7 +20,7 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - **Data sources:** Alpaca (momentum bars), FMP API (VIX, insider), Unusual Whales API (options flow, GEX, vol surface, dark pool, short interest)
 - **Containerization:** Docker Compose for full stack (PostgreSQL + Redis + API)
 
-## Current State (v0.3.0 — Feb 11, 2025)
+## Current State (v0.3.1 — Feb 12, 2025)
 
 **All 8 signal layers are fully implemented:**
 
@@ -48,6 +48,17 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Universe: 35 default tickers in watchlist.yaml (mega-cap, high-momentum, blue chip, sector ETFs, memes)
 - Index filtering: SPXW, SPX, VIX etc. filtered from universe discovery
 - Direction-aware UI: green=bullish, red=bearish, yellow=dark pool conflict
+
+**Key changes from v0.3.0 (Feb 12 session):**
+- Fixed UW 429 rate limit cascade — root cause: 5 parallel processors × 85 tickers overwhelming shared rate limiter
+- UW rate limiter tuned: 1.5 req/sec burst 3 → 1.8 req/sec burst 8
+- Added asyncio.Semaphore(3) to cap concurrent UW requests across all processors
+- Added daily quota guard: skips calls when within 500 of 15K/day limit
+- Added 30s global cooldown after 5 consecutive 429s (lets UW minute window reset)
+- UW client now reads rate limit headers (x-uw-daily-req-count, x-uw-req-per-minute-remaining)
+- 429 retries reduced from 2→1, backoff increased from 2s/4s→5s/10s
+- UW rate_limited_count now tracked and shown in System tab
+- universe_max_tickers default reduced from 200→50 (keeps daily calls ~9K, under 15K limit)
 
 **Key changes from v0.2.0:**
 - Momentum layer switched from FMP to Alpaca (no quota limit, better data)
