@@ -323,3 +323,55 @@ async def clear_auto_journal_session():
 
     clear_session_log()
     return {"status": "cleared"}
+
+
+@router.get("/debug/bars/{ticker}")
+async def debug_bars(ticker: str, limit: int = 5):
+    """
+    Diagnostic: show raw Alpaca bars for a ticker.
+
+    Returns the most recent N bars exactly as Alpaca returns them,
+    plus what the momentum processor would compute as the price.
+    Use this to verify whether Alpaca data matches real market prices.
+    """
+    from src.api.dependencies import get_alpaca_client
+
+    alpaca = get_alpaca_client()
+    if not alpaca or not alpaca.is_configured:
+        return {"error": "Alpaca client not configured"}
+
+    ticker = ticker.upper()
+    bars = await alpaca.get_bars(ticker, timeframe="1Day", limit=252)
+
+    if not bars:
+        return {"error": f"No bars returned for {ticker}", "ticker": ticker}
+
+    # Show what the momentum processor sees
+    closes = [b["c"] for b in bars]
+    computed_price = closes[-1]  # This is what shows on the dashboard
+
+    # Most recent N bars (the tail, which is the newest after reversal)
+    recent = bars[-limit:]
+
+    return {
+        "ticker": ticker,
+        "total_bars": len(bars),
+        "computed_price": round(computed_price, 2),
+        "computed_change_pct": round(
+            ((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 else 0, 2
+        ),
+        "first_bar_date": bars[0].get("t", "?"),
+        "last_bar_date": bars[-1].get("t", "?"),
+        "recent_bars": [
+            {
+                "date": b.get("t", "?"),
+                "open": b["o"],
+                "high": b["h"],
+                "low": b["l"],
+                "close": b["c"],
+                "volume": b["v"],
+                "vwap": b.get("vw"),
+            }
+            for b in recent
+        ],
+    }
