@@ -30,6 +30,7 @@ class ApiQuotaStatus(BaseModel):
     provider: str
     calls_today: int
     errors_today: int
+    rate_limited_today: int = 0
     quota_limit: int
     quota_remaining: int
     quota_pct_used: float
@@ -99,6 +100,7 @@ async def system_status():
             provider="Unusual Whales",
             calls_today=uw_status["calls_today"],
             errors_today=uw_status["errors_today"],
+            rate_limited_today=uw_status.get("rate_limited_today", 0),
             quota_limit=uw_status["quota_limit"],
             quota_remaining=uw_status["quota_remaining"],
             quota_pct_used=uw_status["quota_pct_used"],
