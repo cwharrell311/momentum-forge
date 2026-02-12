@@ -59,6 +59,14 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - 429 retries reduced from 2→1, backoff increased from 2s/4s→5s/10s
 - UW rate_limited_count now tracked and shown in System tab
 - universe_max_tickers default reduced from 200→50 (keeps daily calls ~9K, under 15K limit)
+- Added diagnostic endpoint: GET /api/v1/system/debug/bars/{ticker} — shows raw Alpaca bar data to verify prices
+
+**Known issue (in progress):**
+- Dashboard shows WRONG stock prices for some tickers (QQQ shows $821.87, real price ~$613; PLTR $146.59 vs ~$136; TSLA ~correct)
+- Price chain traced: Alpaca bars → momentum.py `closes[-1]` → metadata["price"] → dashboard
+- Code logic is correct — suspect Alpaca is returning incorrect bar data for some tickers
+- Debug endpoint added to inspect raw bars, but Chris hasn't been able to hit it yet (port conflict between Docker API container and local uvicorn on port 8000)
+- **Next step:** Chris needs to `git pull` latest code, stop one of the two port-8000 processes, then test `http://localhost:8000/api/v1/system/debug/bars/QQQ` to see raw Alpaca data
 
 **Key changes from v0.2.0:**
 - Momentum layer switched from FMP to Alpaca (no quota limit, better data)
