@@ -384,13 +384,20 @@ class AlpacaClient:
 
         # Try without explicit feed first (uses account default),
         # then fall back to iex if empty. Paper accounts may not have SIP access.
+        #
+        # IMPORTANT: sort=desc + reverse ensures we always get the MOST RECENT
+        # bars. With sort=asc and limit=252, Alpaca returns the oldest 252 bars
+        # from start_date — silently dropping the newest data when the date
+        # range contains more than 252 trading days. By sorting desc first,
+        # the limit keeps the most recent bars, then we reverse to chronological
+        # order for SMA calculations.
         for feed in (None, "iex"):
             try:
                 params: dict = {
                     "timeframe": timeframe,
                     "limit": limit,
                     "start": start_date,
-                    "sort": "asc",
+                    "sort": "desc",
                 }
                 if feed:
                     params["feed"] = feed
@@ -403,6 +410,8 @@ class AlpacaClient:
                 data = resp.json()
                 bars = data.get("bars") or []
                 if bars:
+                    # Reverse to chronological order (oldest first) for SMA/scoring
+                    bars = list(reversed(bars))
                     log.debug("Alpaca bars %s: %d bars (feed=%s)", ticker, len(bars), feed or "default")
                     return bars
                 log.debug("Alpaca bars %s: empty with feed=%s, trying next", ticker, feed or "default")
