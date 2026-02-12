@@ -4,11 +4,22 @@ Confluence Scoring Engine
 The brain of the platform. Combines independent signal layers into
 a single conviction score per ticker. This is where the "holy grail"
 lives — not in any single signal, but in their convergence.
+
+Architecture: All signal processors run in PARALLEL using asyncio.gather.
+Each layer is a fully independent agent — if one is slow or fails, the
+others complete unaffected. The engine scores whatever data is available.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+log = logging.getLogger(__name__)
 
 from src.signals.base import (
     ConfluenceScore,
@@ -18,7 +29,7 @@ from src.signals.base import (
     SignalResult,
 )
 
-# Default weights — override via config/signals.yaml
+# Default weights — overridden by config/signals.yaml if it exists
 DEFAULT_WEIGHTS: dict[str, float] = {
     "options_flow": 0.25,
     "gex": 0.18,
@@ -29,6 +40,29 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "momentum": 0.12,
     # vix_regime is NOT weighted — it modifies other weights
 }
+
+# ── Flow Gate: required layers for a signal to be "trade worthy" ──
+# Options flow MUST agree with direction, PLUS at least one other
+# options-derived layer (GEX or volatility). This ensures smart money
+# is aligned before you risk real capital.
+FLOW_GATE_PRIMARY = "options_flow"           # Required layer
+FLOW_GATE_SECONDARY = {"gex", "volatility"}  # Need at least 1 to confirm
+FLOW_GATE_MIN_STRENGTH = 0.15               # Minimum strength to count as "agreeing"
+
+
+def _load_signal_config() -> dict:
+    """Load signal weights and multipliers from config/signals.yaml."""
+    config_path = Path(__file__).parent.parent.parent / "config" / "signals.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f) or {}
+        except Exception as e:
+            log.warning("Failed to load signals.yaml: %s — using defaults", e)
+    return {}
+
+
+_config = _load_signal_config()
 
 # How much to boost conviction when multiple layers agree
 CONFLUENCE_MULTIPLIERS: dict[int, float] = {
@@ -52,11 +86,20 @@ class ConfluenceEngine:
     """
     Combines signals from all active processors into confluence scores.
 
+    All processors run in PARALLEL — each is an independent agent that
+    fetches its own data, scores independently, and returns results.
+    The engine then combines everything into a unified conviction score.
+
     Usage:
         engine = ConfluenceEngine(processors=[flow, gex, vol, momentum, vix])
         scores = await engine.scan_all(tickers=["AAPL", "NVDA", "TSLA"])
         # Returns list of ConfluenceScore sorted by conviction descending
     """
+
+    # Threshold: if more than 60% of trade-worthy signals have dark pool
+    # conflict, it's a market-wide condition (institutional hedging), not
+    # a ticker-specific warning. Show a banner instead of per-ticker CAUTION.
+    DP_MARKET_WIDE_THRESHOLD = 0.60
 
     def __init__(
         self,
@@ -64,7 +107,7 @@ class ConfluenceEngine:
         weights: dict[str, float] | None = None,
     ):
         self.processors = processors
-        self.weights = weights or DEFAULT_WEIGHTS
+        self.weights = weights or _config.get("signal_weights", DEFAULT_WEIGHTS)
 
         # Separate the VIX regime processor from scoring processors
         self._regime_processor: SignalProcessor | None = None
@@ -73,10 +116,56 @@ class ConfluenceEngine:
         for p in processors:
             if p.name == "vix_regime":
                 self._regime_processor = p
-            else:
-                self._signal_processors = [
-                    p for p in processors if p.name != "vix_regime"
-                ]
+
+        self._signal_processors = [
+            p for p in processors if p.name != "vix_regime"
+        ]
+
+        # Market-wide dark pool divergence status (set by scan_all post-processing)
+        self._dp_divergence: str | None = None
+
+    @property
+    def dp_divergence(self) -> str | None:
+        """
+        Market-wide dark pool divergence status (set after scan_all).
+
+        Returns:
+            "market_wide" — dark pools disagree with flow across >60% of signals.
+                           This is institutional hedging, not a per-ticker concern.
+            None — dark pool conflicts are ticker-specific (show per-ticker CAUTION).
+        """
+        return self._dp_divergence
+
+    def _detect_dp_divergence(self, scores: list[ConfluenceScore]) -> str | None:
+        """
+        Check if dark pool conflict is market-wide or ticker-specific.
+
+        When >60% of trade-worthy signals have DP conflict, it means institutions
+        are hedging across the board — not something you can act on per-ticker.
+        Strip per-ticker warnings and return "market_wide" so the UI shows a banner.
+        """
+        trade_worthy = [s for s in scores if s.trade_worthy]
+        if not trade_worthy:
+            return None
+
+        dp_conflict_count = sum(
+            1 for s in trade_worthy if "WARNING: dark pool" in s.gate_details
+        )
+        ratio = dp_conflict_count / len(trade_worthy)
+
+        if ratio > self.DP_MARKET_WIDE_THRESHOLD:
+            # Market-wide condition — strip per-ticker DP warnings
+            for s in scores:
+                if s.trade_worthy and " | WARNING:" in s.gate_details:
+                    s.gate_details = s.gate_details.split(" | WARNING:")[0]
+            log.info(
+                "Dark pool divergence is MARKET-WIDE (%d/%d = %.0f%% of trade-worthy signals) "
+                "— stripping per-ticker CAUTION, showing regime banner instead",
+                dp_conflict_count, len(trade_worthy), ratio * 100,
+            )
+            return "market_wide"
+
+        return None
 
     async def get_current_regime(self) -> Regime:
         """Determine current market regime from VIX data."""
@@ -93,24 +182,36 @@ class ConfluenceEngine:
         """
         Scan all tickers across all signal layers and compute confluence scores.
 
+        All processors run in PARALLEL via asyncio.gather. Each processor is
+        an independent agent — if one fails or is slow, the others complete
+        unaffected. The engine scores whatever data is available.
+
         Returns a list of ConfluenceScore objects sorted by conviction (highest first).
         Only returns tickers that have at least 1 active signal.
         """
         regime = await self.get_current_regime()
 
-        # Gather signals from all processors
+        # Gather signals from all processors IN PARALLEL
         all_signals: dict[str, list[SignalResult]] = {t: [] for t in tickers}
 
-        for processor in self._signal_processors:
+        async def _run_processor(processor: SignalProcessor) -> list[SignalResult]:
+            """Run a single processor as an independent agent."""
             try:
-                results = await processor.scan(tickers)
-                for signal in results:
-                    if signal.ticker in all_signals:
-                        all_signals[signal.ticker].append(signal)
+                return await processor.scan(tickers)
             except Exception as e:
-                # Log error but don't let one failed processor kill everything
-                print(f"Warning: {processor.name} failed: {e}")
-                continue
+                log.warning("%s agent failed: %s", processor.name, e)
+                return []
+
+        # Fire all processors simultaneously — each is an independent agent
+        results_per_processor = await asyncio.gather(
+            *[_run_processor(p) for p in self._signal_processors]
+        )
+
+        # Collect all signals by ticker
+        for results in results_per_processor:
+            for signal in results:
+                if signal.ticker in all_signals:
+                    all_signals[signal.ticker].append(signal)
 
         # Score each ticker
         scores: list[ConfluenceScore] = []
@@ -123,21 +224,37 @@ class ConfluenceEngine:
 
         # Sort by conviction descending
         scores.sort(key=lambda s: s.conviction, reverse=True)
+
+        # ── Post-processing: smart dark pool divergence detection ──
+        # If >60% of trade-worthy signals have DP conflict, it's a market-wide
+        # condition (institutional hedging) — not useful as per-ticker warning.
+        # Strip individual warnings and flag it as a regime-level note.
+        self._dp_divergence = self._detect_dp_divergence(scores)
+
         return scores
 
     async def scan_single(self, ticker: str) -> ConfluenceScore | None:
-        """Deep scan a single ticker with detailed signal data."""
-        regime = await self.get_current_regime()
-        signals: list[SignalResult] = []
+        """
+        Deep scan a single ticker with detailed signal data.
 
-        for processor in self._signal_processors:
+        All processors run in parallel for this single ticker.
+        """
+        regime = await self.get_current_regime()
+
+        async def _run_single(processor: SignalProcessor) -> SignalResult | None:
+            """Run a single processor scan for one ticker."""
             try:
-                result = await processor.scan_single(ticker)
-                if result:
-                    signals.append(result)
+                return await processor.scan_single(ticker)
             except Exception as e:
-                print(f"Warning: {processor.name} failed for {ticker}: {e}")
-                continue
+                log.warning("%s agent failed for %s: %s", processor.name, ticker, e)
+                return None
+
+        # Fire all processors simultaneously
+        results = await asyncio.gather(
+            *[_run_single(p) for p in self._signal_processors]
+        )
+
+        signals = [r for r in results if r is not None]
 
         if not signals:
             return None
@@ -222,6 +339,9 @@ class ConfluenceEngine:
         # Clamp to 0.0 - 1.0
         conviction = max(0.0, min(1.0, raw_conviction))
 
+        # ── Flow Gate: determine if this signal is trade-worthy ──
+        trade_worthy, gate_details = self._check_flow_gate(signals, dominant)
+
         return ConfluenceScore(
             ticker=ticker,
             direction=dominant,
@@ -230,5 +350,85 @@ class ConfluenceEngine:
             total_layers=len(self._signal_processors),
             signals=signals,
             regime=regime,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
+            trade_worthy=trade_worthy,
+            gate_details=gate_details,
         )
+
+    def _check_flow_gate(
+        self,
+        signals: list[SignalResult],
+        dominant: Direction,
+    ) -> tuple[bool, str]:
+        """
+        Flow gate: require options flow + at least one options-derived
+        layer (GEX or volatility) to agree with the dominant direction
+        before marking a signal as trade-worthy.
+
+        This prevents situations like BA where momentum + dark pool were
+        bullish but options flow was bearish — smart money was betting
+        against the move. Without this gate, the engine would score it
+        as a bullish trade at 68% conviction, which is wrong.
+
+        Returns:
+            (trade_worthy: bool, explanation: str)
+        """
+        # Build a lookup: layer_name -> (direction, strength)
+        layer_signals: dict[str, tuple[Direction, float]] = {}
+        for sig in signals:
+            layer_signals[sig.layer] = (sig.direction, sig.strength)
+
+        # Check 1: Is options_flow present and agreeing?
+        flow_data = layer_signals.get(FLOW_GATE_PRIMARY)
+        if not flow_data:
+            return False, "No options flow data — cannot confirm smart money direction"
+
+        flow_dir, flow_strength = flow_data
+        if flow_dir != dominant:
+            return False, (
+                f"FLOW GATE BLOCKED: options flow is {flow_dir.value} "
+                f"but dominant signal is {dominant.value} — smart money disagrees"
+            )
+
+        if flow_strength < FLOW_GATE_MIN_STRENGTH:
+            return False, (
+                f"Options flow too weak ({flow_strength:.0%}) — "
+                f"need >{FLOW_GATE_MIN_STRENGTH:.0%} to confirm direction"
+            )
+
+        # Check 2: At least one secondary options layer must confirm
+        confirming_secondary: list[str] = []
+        for layer_name in FLOW_GATE_SECONDARY:
+            sec_data = layer_signals.get(layer_name)
+            if sec_data:
+                sec_dir, sec_strength = sec_data
+                if sec_dir == dominant and sec_strength >= FLOW_GATE_MIN_STRENGTH:
+                    confirming_secondary.append(layer_name)
+
+        if not confirming_secondary:
+            return False, (
+                f"Options flow agrees ({flow_dir.value}) but no secondary "
+                f"options layer (GEX, volatility) confirms — need at least one"
+            )
+
+        # All gates passed
+        confirmed_layers = [FLOW_GATE_PRIMARY] + confirming_secondary
+        details = (
+            f"TRADE WORTHY: {', '.join(confirmed_layers)} all confirm "
+            f"{dominant.value} direction"
+        )
+
+        # Check for dark pool conflict — institutional equity positioning
+        # disagrees with options flow. Common when institutions are hedging
+        # (accumulating stock + buying puts for protection). Flag it so the
+        # trader can factor it into their decision.
+        dp_data = layer_signals.get("dark_pool")
+        if dp_data:
+            dp_dir, dp_strength = dp_data
+            if dp_dir != dominant and dp_dir != Direction.NEUTRAL and dp_strength >= 0.40:
+                details += (
+                    f" | WARNING: dark pool is {dp_dir.value} ({dp_strength:.0%} str)"
+                    f" — institutions may be hedging, not directionally aligned"
+                )
+
+        return True, details

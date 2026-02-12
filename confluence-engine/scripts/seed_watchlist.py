@@ -1,12 +1,24 @@
 """
 Seed the watchlist table from config/watchlist.yaml.
-Run: python scripts/seed_watchlist.py
+
+Run this after starting the database for the first time:
+    python -m scripts.seed_watchlist
+
+It reads the tickers from config/watchlist.yaml and inserts them
+into the PostgreSQL watchlist table. Safe to run multiple times —
+it skips tickers that already exist.
 """
 
 from __future__ import annotations
 
-import yaml
+import asyncio
 from pathlib import Path
+
+import yaml
+from sqlalchemy import select
+
+from src.models.tables import Watchlist
+from src.utils.db import get_session
 
 
 def load_watchlist() -> list[str]:
@@ -16,15 +28,33 @@ def load_watchlist() -> list[str]:
     return data.get("tickers", [])
 
 
-def main():
-    tickers = load_watchlist()
-    print(f"Loaded {len(tickers)} tickers from watchlist config:")
-    for t in tickers:
-        print(f"  {t}")
+async def seed() -> None:
+    # Run migrations (creates tables + adds any missing columns)
+    from scripts.migrate import run_migrations
 
-    # TODO: Insert into PostgreSQL watchlist table
-    # For now, just validates the config loads correctly
-    print(f"\n✅ Watchlist ready. Connect to DB to seed.")
+    await run_migrations()
+    print()  # blank line after migration output
+
+    tickers = load_watchlist()
+    print(f"Loaded {len(tickers)} tickers from config")
+
+    async with get_session() as session:
+        for ticker in tickers:
+            existing = await session.get(Watchlist, ticker)
+            if existing:
+                print(f"  {ticker} — already exists, skipping")
+                continue
+
+            session.add(Watchlist(ticker=ticker))
+            print(f"  {ticker} — added")
+
+        await session.commit()
+
+    print(f"\nWatchlist seeded successfully.")
+
+
+def main():
+    asyncio.run(seed())
 
 
 if __name__ == "__main__":

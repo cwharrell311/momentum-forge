@@ -42,6 +42,16 @@ alerts:
   squeeze_short_interest_min: 0.15   # 15%+ SI for squeeze detection
   squeeze_borrow_cost_min: 20.0      # 20%+ CTB = squeeze fuel
 
+# Flow gate: require these layers to agree before marking trade-worthy.
+# Options flow MUST agree with dominant direction, plus at least one
+# secondary options-derived layer. Prevents trading against smart money.
+flow_gate:
+  primary: options_flow             # Must agree with dominant direction
+  secondary:                        # Need at least 1 to confirm
+    - gex
+    - volatility
+  min_strength: 0.15                # Minimum layer strength to count
+
 # Refresh intervals (seconds)
 refresh_intervals:
   options_flow: 120          # 2 minutes

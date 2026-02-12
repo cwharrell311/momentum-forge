@@ -1,58 +1,49 @@
-# Default Watchlist
-# Liquid, optionable tickers with active options markets.
-# These are good candidates for confluence scanning.
-# Add/remove via API or by editing this file.
+# Default Watchlist — 35 tickers
+# FMP free tier: 250 calls/day. UW: 15,000 calls/day.
+# At 5-min scans: ~156 FMP calls + ~5,000 UW calls per day.
 
-# Mega-cap tech (highest options liquidity)
 tickers:
+  # ── Mega-cap tech — highest options liquidity ──
   - AAPL
-  - MSFT
   - NVDA
-  - GOOGL
-  - AMZN
-  - META
   - TSLA
+  - META
+  - AMZN
+  - MSFT
   - AMD
+  - GOOGL
   - AVGO
-  - CRM
 
-  # Semiconductors
+  # ── High momentum / heavy options flow ──
+  - PLTR
   - SMCI
   - ARM
-  - MRVL
-  - MU
-  - QCOM
+  - COIN
+  - MSTR
+  - NFLX
+  - CRM
+  - SOFI
+  - MARA
 
-  # Growth / Momentum
-  - PLTR
-  - SNOW
-  - NET
-  - CRWD
-  - DDOG
-  - PANW
-
-  # Finance
+  # ── Blue chip / swing-friendly ──
   - JPM
-  - GS
   - V
-  - MA
-
-  # Healthcare
   - UNH
   - LLY
-  - MRNA
+  - BA
+  - DIS
+  - COST
 
-  # Energy
-  - XOM
-  - CVX
+  # ── Sector ETFs — read the rotation ──
+  - SPY    # S&P 500
+  - QQQ    # Nasdaq 100
+  - IWM    # Russell 2000 (small caps)
+  - XLF    # Financials
+  - XLE    # Energy
+  - XLK    # Technology
+  - GLD    # Gold
+  - TLT    # Long-term treasuries
 
-  # ETFs (for broad market signals)
-  - SPY
-  - QQQ
-  - IWM
-  - XLF
-  - XLE
-  - ARKK
-
-  # High short interest / squeeze candidates (update regularly)
-  # Add tickers here as you spot high SI setups
+  # ── Volatility / meme-adjacent — squeeze candidates ──
+  - RIVN
+  - GME
