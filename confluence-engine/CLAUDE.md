@@ -20,7 +20,7 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - **Data sources:** Alpaca (momentum bars), FMP API (VIX, insider), Unusual Whales API (options flow, GEX, vol surface, dark pool, short interest)
 - **Containerization:** Docker Compose for full stack (PostgreSQL + Redis + API)
 
-## Current State (v0.3.1 — Feb 12, 2025)
+## Current State (v0.3.2 — Feb 13, 2025)
 
 **All 8 signal layers are fully implemented:**
 
@@ -48,6 +48,11 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Universe: 35 default tickers in watchlist.yaml (mega-cap, high-momentum, blue chip, sector ETFs, memes)
 - Index filtering: SPXW, SPX, VIX etc. filtered from universe discovery
 - Direction-aware UI: green=bullish, red=bearish, yellow=dark pool conflict
+
+**Key changes from Feb 13 session:**
+- Fixed intraday charts not rendering — root cause: charts were initializing via setTimeout during renderDetail() while the detail panel was still hidden (max-height:0). The dataset.loaded flag then prevented re-initialization when the panel opened.
+- Fix: moved chart loading to toggleDetail() so it fires when the panel opens and container has visible dimensions
+- Added autoSize:true to lightweight-charts options for proper container-aware sizing
 
 **Key changes from v0.3.0 (Feb 12 session):**
 - Fixed UW 429 rate limit cascade — root cause: 5 parallel processors × 85 tickers overwhelming shared rate limiter
