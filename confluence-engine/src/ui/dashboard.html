@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vicuna</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         :root { --accent: #06b6d4; --accent-dim: #0e7490; --bg-base: #0a0f1a; --bg-card: #111827; --bg-card-hover: #1a2332; --border: #1e293b; }
         body { background: var(--bg-base); color: #c8d1dc; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
@@ -763,6 +764,7 @@
                 return {
                     price: momentum.metadata.price,
                     change_pct: momentum.metadata.change_pct,
+                    company_name: momentum.metadata.company_name,
                     sma_50: momentum.metadata.sma_50,
                     sma_200: momentum.metadata.sma_200,
                     year_high: momentum.metadata.year_high,
@@ -772,7 +774,7 @@
                     relative_volume: momentum.metadata.relative_volume,
                 };
             }
-            return { price: null, change_pct: null, sma_50: null, sma_200: null };
+            return { price: null, change_pct: null, sma_50: null, sma_200: null, company_name: null };
         }
 
         // ═══════════════════════════════════════════════════════
@@ -955,6 +957,7 @@
                 else if (score.conviction >= 50) convColor = 'text-slate-200';
 
                 const priceInfo = getPriceInfo(score);
+                const companyName = priceInfo.company_name || '';
                 const priceText = formatPrice(priceInfo.price);
                 const changeText = formatChange(priceInfo.change_pct);
                 const chgClass = changeClass(priceInfo.change_pct);
@@ -974,6 +977,7 @@
                         <div class="col-span-1 text-slate-600 font-mono text-xs">${index + 1}</div>
                         <div class="col-span-3">
                             <div class="font-bold text-white">${score.ticker}${worthyBadge}</div>
+                            ${companyName && companyName !== score.ticker ? `<div class="text-[10px] text-slate-500 truncate">${companyName}</div>` : ''}
                             ${priceText ? `<div class="text-[11px] mt-0.5"><span class="text-slate-500">${priceText}</span> <span class="${chgClass}">${changeText}</span></div>` : ''}
                         </div>
                         <div class="col-span-1 ${dirColor} text-center">
@@ -1033,11 +1037,13 @@
 
             // VIX Regime
             if (layer === 'vix_regime') {
+                if (m.realized_vol != null) items.push({ label: 'Realized Vol', value: `${Number(m.realized_vol).toFixed(1)}%` });
                 if (m.vix_level != null) items.push({ label: 'VIX', value: Number(m.vix_level).toFixed(1) });
                 if (m.regime) {
                     const regColors = { calm: 'text-green-400', elevated: 'text-yellow-400', stressed: 'text-orange-400', crisis: 'text-red-400' };
                     items.push({ label: 'Regime', value: m.regime.toUpperCase(), color: regColors[m.regime] || 'text-slate-200' });
                 }
+                if (m.spy_bars_used != null) items.push({ label: 'SPY Bars', value: m.spy_bars_used });
             }
 
             // Insider
@@ -1260,7 +1266,95 @@
                 gateBanner = `<div class="rounded-lg p-3 mb-3 border text-xs font-medium ${gateColor}">${gateIcon} ${score.gate_details}</div>`;
             }
 
-            return priceSummary + gateBanner + signalCards;
+            // Intraday chart container
+            const chartId = `chart-${score.ticker}`;
+            const chartSection = `
+                <div class="bg-slate-900/60 rounded-lg p-4 mb-3 border border-slate-700/40">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-[10px] text-slate-500 uppercase tracking-wider">Today's Price Action (5-min)</span>
+                    </div>
+                    <div id="${chartId}" style="height: 200px; width: 100%;"></div>
+                </div>
+            `;
+
+            // Trigger chart load after render
+            setTimeout(() => loadIntradayChart(score.ticker, chartId), 50);
+
+            return priceSummary + chartSection + gateBanner + signalCards;
+        }
+
+        // Intraday chart cache to avoid refetching
+        const _chartCache = {};
+
+        async function loadIntradayChart(ticker, containerId) {
+            const container = document.getElementById(containerId);
+            if (!container || container.dataset.loaded) return;
+            container.dataset.loaded = 'true';
+
+            try {
+                // Check cache first
+                let bars;
+                if (_chartCache[ticker]) {
+                    bars = _chartCache[ticker];
+                } else {
+                    const resp = await fetch(`/api/v1/system/bars/${ticker}/intraday`);
+                    const data = await resp.json();
+                    bars = data.bars || [];
+                    _chartCache[ticker] = bars;
+                }
+
+                if (bars.length === 0) {
+                    container.innerHTML = '<p class="text-slate-600 text-xs text-center py-8">No intraday data available</p>';
+                    return;
+                }
+
+                const chart = LightweightCharts.createChart(container, {
+                    layout: {
+                        background: { type: 'solid', color: 'transparent' },
+                        textColor: '#64748b',
+                        fontSize: 10,
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(30, 41, 59, 0.5)' },
+                        horzLines: { color: 'rgba(30, 41, 59, 0.5)' },
+                    },
+                    rightPriceScale: {
+                        borderColor: 'rgba(30, 41, 59, 0.5)',
+                    },
+                    timeScale: {
+                        borderColor: 'rgba(30, 41, 59, 0.5)',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                    crosshair: {
+                        horzLine: { color: '#475569', labelBackgroundColor: '#1e293b' },
+                        vertLine: { color: '#475569', labelBackgroundColor: '#1e293b' },
+                    },
+                    handleScroll: false,
+                    handleScale: false,
+                });
+
+                // Determine candle colors based on overall direction
+                const firstClose = bars[0].close;
+                const lastClose = bars[bars.length - 1].close;
+                const dayUp = lastClose >= firstClose;
+
+                const candleSeries = chart.addCandlestickSeries({
+                    upColor: '#34d399',
+                    downColor: '#f87171',
+                    borderDownColor: '#f87171',
+                    borderUpColor: '#34d399',
+                    wickDownColor: '#f87171',
+                    wickUpColor: '#34d399',
+                });
+
+                candleSeries.setData(bars);
+                chart.timeScale().fitContent();
+
+            } catch (err) {
+                console.error('Chart load failed for', ticker, err);
+                container.innerHTML = '<p class="text-slate-600 text-xs text-center py-8">Chart unavailable</p>';
+            }
         }
 
         function toggleDetail(id) {

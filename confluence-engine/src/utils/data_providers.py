@@ -345,6 +345,26 @@ class AlpacaClient:
         """Close an entire position for a ticker (sell all shares)."""
         return await self._request("DELETE", f"positions/{ticker}")
 
+    # ── Asset Info ─────────────────────────────────────────────
+
+    _asset_name_cache: dict[str, str] = {}
+
+    async def get_asset_name(self, ticker: str) -> str:
+        """Get company name from Alpaca assets API. Cached in memory."""
+        if ticker in self._asset_name_cache:
+            return self._asset_name_cache[ticker]
+
+        try:
+            data = await self._request("GET", f"assets/{ticker}")
+            if data and isinstance(data, dict):
+                name = data.get("name", ticker)
+                self._asset_name_cache[ticker] = name
+                return name
+        except Exception:
+            pass
+        self._asset_name_cache[ticker] = ticker
+        return ticker
+
     # ── Market Data API ──────────────────────────────────────────
 
     async def get_bars(

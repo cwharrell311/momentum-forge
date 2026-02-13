@@ -325,6 +325,62 @@ async def clear_auto_journal_session():
     return {"status": "cleared"}
 
 
+@router.get("/bars/{ticker}/intraday")
+async def intraday_bars(ticker: str):
+    """
+    Get today's intraday price bars (5-min) for charting.
+
+    Returns OHLC bars from market open to now, suitable for
+    lightweight-charts rendering on the dashboard.
+    """
+    from datetime import datetime as _dt
+
+    from src.api.dependencies import get_alpaca_client
+    from src.config import get_settings
+    from src.utils.data_providers import AlpacaClient
+
+    alpaca = get_alpaca_client()
+    if not alpaca or not alpaca.is_configured:
+        settings = get_settings()
+        alpaca = AlpacaClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+            base_url=settings.alpaca_base_url,
+        )
+        if not alpaca.is_configured:
+            return {"error": "Alpaca not configured"}
+
+    ticker = ticker.upper()
+    bars = await alpaca.get_bars(ticker, timeframe="5Min", limit=80)
+
+    if not bars:
+        return {"ticker": ticker, "bars": []}
+
+    # Format for lightweight-charts: { time, open, high, low, close }
+    chart_bars = []
+    for b in bars:
+        ts = b.get("t", "")
+        try:
+            if "T" in ts:
+                dt = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                unix = int(dt.timestamp())
+            else:
+                unix = 0
+        except Exception:
+            unix = 0
+
+        chart_bars.append({
+            "time": unix,
+            "open": b["o"],
+            "high": b["h"],
+            "low": b["l"],
+            "close": b["c"],
+            "volume": b.get("v", 0),
+        })
+
+    return {"ticker": ticker, "bars": chart_bars}
+
+
 @router.get("/debug/bars/{ticker}")
 async def debug_bars(ticker: str, limit: int = 5):
     """

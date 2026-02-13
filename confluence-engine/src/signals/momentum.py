@@ -122,6 +122,9 @@ class MomentumProcessor(SignalProcessor):
                 quote.get("price", 0), quote.get("changesPercentage", 0),
             )
 
+            # Fetch company name (cached after first call)
+            company_name = await self._alpaca.get_asset_name(ticker)
+
             return SignalResult(
                 ticker=ticker,
                 layer=self.name,
@@ -132,6 +135,7 @@ class MomentumProcessor(SignalProcessor):
                 metadata={
                     "price": quote.get("price"),
                     "change_pct": quote.get("changesPercentage"),
+                    "company_name": company_name,
                     "ma_alignment": scores.get("ma_alignment"),
                     "ma_cross": scores.get("ma_cross"),
                     "trend_strength": scores.get("trend_strength"),
