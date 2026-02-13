@@ -335,10 +335,20 @@ async def debug_bars(ticker: str, limit: int = 5):
     Use this to verify whether Alpaca data matches real market prices.
     """
     from src.api.dependencies import get_alpaca_client
+    from src.config import get_settings
+    from src.utils.data_providers import AlpacaClient
 
     alpaca = get_alpaca_client()
     if not alpaca or not alpaca.is_configured:
-        return {"error": "Alpaca client not configured"}
+        # Fallback: create a temporary client from settings
+        settings = get_settings()
+        alpaca = AlpacaClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+            base_url=settings.alpaca_base_url,
+        )
+        if not alpaca.is_configured:
+            return {"error": "Alpaca not configured — check ALPACA_API_KEY in .env"}
 
     ticker = ticker.upper()
     bars = await alpaca.get_bars(ticker, timeframe="1Day", limit=252)
