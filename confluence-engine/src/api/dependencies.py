@@ -29,13 +29,36 @@ from src.signals.volatility import VolatilityProcessor
 from src.signals.vix_regime import VixRegimeProcessor
 from src.utils.data_providers import AlpacaClient, FMPClient, UnusualWhalesClient
 
-# Index products to exclude from universe discovery.
-# Their options flow is predominantly hedging (portfolio protection),
-# not directional conviction — scoring them like equities produces
-# false bearish signals (e.g. SPXW at 60% bearish = just hedge flow).
-_INDEX_TICKERS = {
+# Non-stock tickers to exclude from universe discovery.
+# We only want individual stocks — ETFs, ETNs, indexes, and leveraged
+# products have distorted flow (hedging, not directional conviction).
+_NON_STOCK_TICKERS = {
+    # ── Index products ──
     "SPX", "SPXW", "NDX", "VIX", "VIXW", "RUT", "DJX", "OEX", "XSP",
-    "SPXS", "SPXL",  # Leveraged SPX ETFs with distorted flow
+    # ── Broad market ETFs ──
+    "SPY", "QQQ", "IWM", "DIA", "MDY", "IJH", "IJR", "VTI", "VOO", "RSP",
+    "IVV", "VUG", "VTV", "SCHD", "SPLG", "IUSG", "IUSV",
+    # ── Sector ETFs ──
+    "XLF", "XLE", "XLK", "XLV", "XLI", "XLB", "XLP", "XLU", "XLRE", "XLC",
+    "XBI", "XOP", "XHB", "XME", "XRT", "SMH", "ITB", "KRE", "KBE", "HACK",
+    "SOXX", "IGV", "IYR", "IYT", "IYF",
+    # ── Commodity ETFs ──
+    "GLD", "SLV", "GDX", "GDXJ", "USO", "UNG", "SLX", "COPX", "IAU",
+    "PPLT", "PALL", "DBA", "DBC", "WEAT", "CORN",
+    # ── Bond ETFs ──
+    "TLT", "IEF", "SHY", "LQD", "HYG", "JNK", "TIP", "AGG", "BND",
+    "BNDX", "VCIT", "VCSH", "MUB", "EMB", "GOVT", "SHV", "BIL",
+    # ── Volatility ETFs/ETNs ──
+    "VXX", "UVXY", "UVIX", "SVXY", "VIXY", "VIXM", "SVOL",
+    # ── Leveraged / Inverse ETFs ──
+    "TQQQ", "SQQQ", "SPXL", "SPXS", "QLD", "SSO", "SDS", "SH", "DOG",
+    "PSQ", "UPRO", "SPXU", "TNA", "TZA", "LABU", "LABD", "SOXL", "SOXS",
+    "FNGU", "FNGD", "JNUG", "JDST", "NUGT", "DUST", "FAS", "FAZ",
+    "ERX", "ERY", "TECL", "TECS", "UDOW", "SDOW", "YANG", "YINN",
+    # ── Thematic / ARK / International ETFs ──
+    "ARKK", "ARKW", "ARKF", "ARKG", "ARKQ", "ARKX",
+    "EEM", "EFA", "FXI", "INDA", "EWZ", "EWJ", "IEMG", "VWO", "VEA",
+    "KWEB", "MCHI", "ASHR",
 }
 
 # These get populated by init_app() during startup
@@ -197,18 +220,15 @@ async def get_watchlist_tickers() -> list[str]:
 
 async def discover_active_tickers() -> list[str]:
     """
-    Discover tickers with unusual options activity across all US exchanges.
+    Discover individual stocks with unusual options activity.
 
-    Uses UW's market-wide flow alerts endpoint to find ANY optionable stock
-    with recent institutional flow — not just your watchlist. This turns
-    the engine from a 35-ticker scanner into a full-market signal detector.
-
-    Returns a de-duplicated list of tickers sorted by flow volume.
-    Merges with the watchlist so your core names are always included.
+    Pulls a large batch of flow alerts from UW, filters out all ETFs/ETNs/
+    index products, and returns the top stocks ranked by premium volume.
 
     Controlled by config:
-    - UNIVERSE_DISCOVERY=true  → scan market-wide flow + watchlist
+    - UNIVERSE_DISCOVERY=true  → scan market-wide flow (stocks only)
     - UNIVERSE_DISCOVERY=false → watchlist only (original behavior)
+    - UNIVERSE_MAX_TICKERS     → cap on how many stocks to scan
     """
     import logging
 
@@ -221,22 +241,23 @@ async def discover_active_tickers() -> list[str]:
         log.debug("Universe discovery disabled — using watchlist only")
         return await get_watchlist_tickers()
 
-    limit = settings.universe_max_tickers
-
     if not _uw_client or not _uw_client.is_configured:
         log.info("UW not configured — using watchlist only")
         return await get_watchlist_tickers()
 
     try:
-        # Pull market-wide flow alerts from UW
-        flow_alerts = await _uw_client.get_market_flow(limit=limit)
+        # Pull a large batch of flow alerts (1 API call regardless of limit).
+        # We fetch 500 to get past the ETF-dominated top of the list and
+        # find individual stocks with unusual activity.
+        flow_alerts = await _uw_client.get_market_flow(limit=500)
 
         if not flow_alerts:
             log.info("No market flow data — falling back to watchlist")
             return await get_watchlist_tickers()
 
-        # Extract unique tickers from flow alerts, ranked by activity
+        # Extract unique STOCK tickers, filtering out everything else
         ticker_premium: dict[str, float] = {}
+        skipped_etfs: set[str] = set()
         for alert in flow_alerts:
             ticker = (
                 alert.get("ticker_symbol")
@@ -245,12 +266,17 @@ async def discover_active_tickers() -> list[str]:
                 or ""
             ).upper().strip()
             if not ticker or len(ticker) > 6:
-                continue  # Skip invalid/long tickers (indexes, etc.)
-            # Skip common non-equity tickers
+                continue
+            # Skip non-equity symbols
             if ticker.startswith("^") or ticker.startswith("$"):
                 continue
-            # Skip index products — their flow is mostly hedging, not directional
-            if ticker in _INDEX_TICKERS:
+            # Skip ETFs, ETNs, indexes, leveraged products
+            if ticker in _NON_STOCK_TICKERS:
+                skipped_etfs.add(ticker)
+                continue
+            # Also check UW's is_etf field if present
+            if alert.get("is_etf") is True:
+                skipped_etfs.add(ticker)
                 continue
 
             premium = 0.0
@@ -264,12 +290,21 @@ async def discover_active_tickers() -> list[str]:
                     break
             ticker_premium[ticker] = ticker_premium.get(ticker, 0) + premium
 
-        # Sort by total premium (most active first)
-        discovered = sorted(ticker_premium.keys(), key=lambda t: ticker_premium[t], reverse=True)
+        # Sort by total premium (most active first), cap at max tickers
+        max_tickers = settings.universe_max_tickers
+        discovered = sorted(
+            ticker_premium.keys(),
+            key=lambda t: ticker_premium[t],
+            reverse=True,
+        )[:max_tickers]
 
         log.info(
-            "Universe: %d tickers discovered from UW market flow",
+            "Universe: %d stocks discovered from %d flow alerts "
+            "(filtered %d ETFs/indexes: %s)",
             len(discovered),
+            len(flow_alerts),
+            len(skipped_etfs),
+            ", ".join(sorted(skipped_etfs)) if skipped_etfs else "none",
         )
         return discovered
 
