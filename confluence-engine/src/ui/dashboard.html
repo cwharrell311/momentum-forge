@@ -257,50 +257,134 @@
                 <p class="text-slate-500 text-sm mt-2">Performance stats need PostgreSQL. Run <code class="bg-slate-700 px-2 py-0.5 rounded text-xs">docker compose up -d</code> to start it.</p>
             </div>
 
-            <div id="perf-empty" class="text-center py-16 hidden">
-                <p class="text-slate-400 text-lg">No closed trades yet</p>
-                <p class="text-slate-500 text-sm mt-2">Close some trades to see your performance stats.</p>
-            </div>
-
             <div id="perf-content" class="hidden">
-                <h2 class="text-lg font-semibold text-white mb-4">Performance Dashboard</h2>
+                <!-- ── Signal Scorecard Section ── -->
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-white">Signal Scorecard</h2>
+                    <button onclick="triggerGrading()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded transition-colors">Grade Now</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">Forward testing: are these signals actually predictive? Signals are recorded automatically and graded against real price outcomes.</p>
 
-                <!-- P&L Stats Cards -->
+                <!-- Scorecard Status Bar -->
+                <div id="scorecard-status" class="bg-slate-800 rounded-lg p-3 border border-slate-700 mb-4 flex items-center gap-6 text-sm">
+                    <div><span class="text-slate-400">Signals recorded:</span> <span id="sc-total" class="text-white font-semibold">0</span></div>
+                    <div><span class="text-slate-400">Graded:</span> <span id="sc-graded" class="text-cyan-400 font-semibold">0</span></div>
+                    <div><span class="text-slate-400">Pending:</span> <span id="sc-ungraded" class="text-amber-400 font-semibold">0</span></div>
+                </div>
+
+                <!-- Hit Rate Cards by Horizon -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
                     <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase tracking-wide">Total P&L</div>
-                        <div id="perf-pnl" class="text-3xl font-bold mt-2">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">T+1 Hit Rate</div>
+                        <div id="sc-hit-t1" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        <div id="sc-ret-t1" class="text-xs text-slate-500 mt-1">avg return: &mdash;</div>
                     </div>
                     <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase tracking-wide">Win Rate</div>
-                        <div id="perf-winrate" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">T+5 Hit Rate</div>
+                        <div id="sc-hit-t5" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        <div id="sc-ret-t5" class="text-xs text-slate-500 mt-1">avg return: &mdash;</div>
                     </div>
                     <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Win</div>
-                        <div id="perf-avgwin" class="text-3xl font-bold change-up mt-2">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">T+10 Hit Rate</div>
+                        <div id="sc-hit-t10" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        <div id="sc-ret-t10" class="text-xs text-slate-500 mt-1">avg return: &mdash;</div>
                     </div>
                     <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Loss</div>
-                        <div id="perf-avgloss" class="text-3xl font-bold change-down mt-2">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase tracking-wide">T+20 Hit Rate</div>
+                        <div id="sc-hit-t20" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        <div id="sc-ret-t20" class="text-xs text-slate-500 mt-1">avg return: &mdash;</div>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <!-- Trade Worthy vs Not -->
+                <div class="grid grid-cols-2 gap-4 mb-6">
                     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase">Total Trades</div>
-                        <div id="perf-total" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase">Trade-Worthy Signals (T+5)</div>
+                        <div id="sc-tw-hit" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        <div class="text-[10px] text-slate-500 mt-0.5">Flow gate passed &mdash; smart money agreed</div>
                     </div>
                     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase">Wins / Losses</div>
-                        <div id="perf-wl" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        <div class="text-xs text-slate-400 uppercase">Non-Trade-Worthy (T+5)</div>
+                        <div id="sc-ntw-hit" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        <div class="text-[10px] text-slate-500 mt-0.5">Flow gate blocked &mdash; no smart money confirmation</div>
                     </div>
-                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase">Best Trade</div>
-                        <div id="perf-best" class="text-xl font-bold change-up mt-1">&mdash;</div>
+                </div>
+
+                <!-- Conviction Buckets -->
+                <h3 class="text-sm font-semibold text-slate-300 mb-2 mt-6">Hit Rate by Conviction Level (T+5)</h3>
+                <div id="conviction-buckets" class="grid grid-cols-5 gap-2 mb-6"></div>
+
+                <!-- Layer Accuracy -->
+                <h3 class="text-sm font-semibold text-slate-300 mb-2 mt-6">Layer Accuracy</h3>
+                <p class="text-xs text-slate-500 mb-2">How often each layer appeared in correct vs incorrect signals (T+5)</p>
+                <div id="layer-accuracy" class="space-y-1 mb-6"></div>
+
+                <!-- Recent Signals Table -->
+                <div class="flex items-center justify-between mt-6 mb-2">
+                    <h3 class="text-sm font-semibold text-slate-300">Recent Signals</h3>
+                    <div class="flex gap-2">
+                        <button onclick="loadSignals(false)" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-1 rounded">All</button>
+                        <button onclick="loadSignals(true)" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-1 rounded">Trade-Worthy Only</button>
                     </div>
-                    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                        <div class="text-xs text-slate-400 uppercase">Worst Trade</div>
-                        <div id="perf-worst" class="text-xl font-bold change-down mt-1">&mdash;</div>
+                </div>
+                <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+                    <div class="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-medium text-slate-400 uppercase tracking-wide border-b border-slate-700">
+                        <div class="col-span-1">Ticker</div>
+                        <div class="col-span-1">Dir</div>
+                        <div class="col-span-1">Conv%</div>
+                        <div class="col-span-1">Layers</div>
+                        <div class="col-span-2">Entry Price</div>
+                        <div class="col-span-1">T+1</div>
+                        <div class="col-span-1">T+5</div>
+                        <div class="col-span-1">T+10</div>
+                        <div class="col-span-1">T+20</div>
+                        <div class="col-span-2">Date</div>
+                    </div>
+                    <div id="signals-body"></div>
+                </div>
+
+                <!-- ── Trade P&L Section ── -->
+                <h2 class="text-lg font-semibold text-white mt-8 mb-4">Trade P&L</h2>
+                <div id="perf-empty" class="text-center py-8 hidden">
+                    <p class="text-slate-400">No closed trades yet</p>
+                </div>
+                <div id="perf-trades-content">
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase tracking-wide">Total P&L</div>
+                            <div id="perf-pnl" class="text-3xl font-bold mt-2">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase tracking-wide">Win Rate</div>
+                            <div id="perf-winrate" class="text-3xl font-bold text-white mt-2">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Win</div>
+                            <div id="perf-avgwin" class="text-3xl font-bold change-up mt-2">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-5 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase tracking-wide">Avg Loss</div>
+                            <div id="perf-avgloss" class="text-3xl font-bold change-down mt-2">&mdash;</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase">Total Trades</div>
+                            <div id="perf-total" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase">Wins / Losses</div>
+                            <div id="perf-wl" class="text-xl font-bold text-white mt-1">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase">Best Trade</div>
+                            <div id="perf-best" class="text-xl font-bold change-up mt-1">&mdash;</div>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                            <div class="text-xs text-slate-400 uppercase">Worst Trade</div>
+                            <div id="perf-worst" class="text-xl font-bold change-down mt-1">&mdash;</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1588,36 +1672,192 @@
 
         async function loadPerformance() {
             try {
-                const resp = await fetch(`${API}/api/v1/trades/stats/summary`);
-                if (!resp.ok) throw new Error('DB error');
-                const stats = await resp.json();
+                // Load everything in parallel
+                const [tradeResp, scorecardResp, layerResp] = await Promise.all([
+                    fetch(`${API}/api/v1/trades/stats/summary`).catch(() => null),
+                    fetch(`${API}/api/v1/performance/scorecard`).catch(() => null),
+                    fetch(`${API}/api/v1/performance/by-layer`).catch(() => null),
+                ]);
 
                 document.getElementById('perf-error').classList.add('hidden');
+                document.getElementById('perf-content').classList.remove('hidden');
 
-                if (stats.closed_trades === 0) {
-                    document.getElementById('perf-empty').classList.remove('hidden');
-                    document.getElementById('perf-content').classList.add('hidden');
+                // ── Signal Scorecard ──
+                if (scorecardResp && scorecardResp.ok) {
+                    const sc = await scorecardResp.json();
+                    document.getElementById('sc-total').textContent = sc.total_signals;
+                    document.getElementById('sc-graded').textContent = sc.graded_signals;
+                    document.getElementById('sc-ungraded').textContent = sc.ungraded_signals;
+
+                    // Hit rate cards
+                    for (const h of ['t1', 't5', 't10', 't20']) {
+                        const hitEl = document.getElementById(`sc-hit-${h}`);
+                        const retEl = document.getElementById(`sc-ret-${h}`);
+                        const rate = sc[`hit_rate_${h}`];
+                        const ret = sc[`avg_return_${h}`];
+
+                        if (rate !== null && rate !== undefined) {
+                            const pct = (rate * 100).toFixed(0);
+                            hitEl.textContent = `${pct}%`;
+                            hitEl.className = `text-3xl font-bold mt-2 ${rate >= 0.55 ? 'change-up' : rate <= 0.45 ? 'change-down' : 'text-white'}`;
+                        } else {
+                            hitEl.textContent = '\u2014';
+                            hitEl.className = 'text-3xl font-bold text-white mt-2';
+                        }
+                        if (ret !== null && ret !== undefined) {
+                            retEl.textContent = `avg return: ${ret > 0 ? '+' : ''}${ret}%`;
+                            retEl.className = `text-xs mt-1 ${ret > 0 ? 'text-emerald-400' : ret < 0 ? 'text-red-400' : 'text-slate-500'}`;
+                        } else {
+                            retEl.textContent = 'avg return: \u2014';
+                        }
+                    }
+
+                    // Trade-worthy vs not
+                    const twEl = document.getElementById('sc-tw-hit');
+                    const ntwEl = document.getElementById('sc-ntw-hit');
+                    if (sc.trade_worthy_hit_rate !== null && sc.trade_worthy_hit_rate !== undefined) {
+                        twEl.textContent = `${(sc.trade_worthy_hit_rate * 100).toFixed(0)}%`;
+                        twEl.className = `text-xl font-bold mt-1 ${sc.trade_worthy_hit_rate >= 0.55 ? 'change-up' : 'text-white'}`;
+                    }
+                    if (sc.non_trade_worthy_hit_rate !== null && sc.non_trade_worthy_hit_rate !== undefined) {
+                        ntwEl.textContent = `${(sc.non_trade_worthy_hit_rate * 100).toFixed(0)}%`;
+                        ntwEl.className = `text-xl font-bold mt-1 ${sc.non_trade_worthy_hit_rate >= 0.55 ? 'change-up' : 'text-white'}`;
+                    }
+
+                    // Conviction buckets
+                    const bucketsEl = document.getElementById('conviction-buckets');
+                    bucketsEl.innerHTML = sc.conviction_buckets.map(b => {
+                        const rate = b.hit_rate_t5;
+                        const rateStr = rate !== null && rate !== undefined ? `${(rate * 100).toFixed(0)}%` : '\u2014';
+                        const retStr = b.avg_return_t5 !== null ? `${b.avg_return_t5 > 0 ? '+' : ''}${b.avg_return_t5}%` : '';
+                        const color = rate !== null ? (rate >= 0.55 ? 'border-emerald-500/50' : rate <= 0.45 ? 'border-red-500/50' : 'border-slate-600') : 'border-slate-700';
+                        return `<div class="bg-slate-800 rounded-lg p-3 border ${color} text-center">
+                            <div class="text-[10px] text-slate-400 uppercase">${b.range}</div>
+                            <div class="text-lg font-bold ${rate !== null && rate >= 0.55 ? 'change-up' : rate !== null && rate <= 0.45 ? 'change-down' : 'text-white'} mt-1">${rateStr}</div>
+                            <div class="text-[10px] text-slate-500">${b.count} signals</div>
+                            <div class="text-[10px] ${b.avg_return_t5 > 0 ? 'text-emerald-400' : b.avg_return_t5 < 0 ? 'text-red-400' : 'text-slate-500'}">${retStr}</div>
+                        </div>`;
+                    }).join('');
+                } else {
+                    document.getElementById('sc-total').textContent = '0';
+                    document.getElementById('sc-graded').textContent = '0';
+                    document.getElementById('sc-ungraded').textContent = '0';
+                }
+
+                // ── Layer Accuracy ──
+                if (layerResp && layerResp.ok) {
+                    const layers = await layerResp.json();
+                    const layerEl = document.getElementById('layer-accuracy');
+                    if (layers.length === 0) {
+                        layerEl.innerHTML = '<p class="text-xs text-slate-500">No graded signals yet &mdash; layer accuracy will appear after signals are graded.</p>';
+                    } else {
+                        layerEl.innerHTML = layers.map(l => {
+                            const hitPct = l.presence_in_hits_t5 !== null ? (l.presence_in_hits_t5 * 100).toFixed(0) : '?';
+                            const missPct = l.presence_in_misses_t5 !== null ? (l.presence_in_misses_t5 * 100).toFixed(0) : '?';
+                            return `<div class="flex items-center gap-3 bg-slate-800 rounded px-3 py-2 border border-slate-700">
+                                <div class="w-28 text-xs font-medium text-slate-300">${l.layer}</div>
+                                <div class="flex-1">
+                                    <div class="flex gap-1 h-4">
+                                        <div class="bg-emerald-500/70 rounded-sm" style="width: ${hitPct}%" title="In correct signals: ${hitPct}%"></div>
+                                        <div class="bg-red-500/70 rounded-sm" style="width: ${missPct}%" title="In incorrect signals: ${missPct}%"></div>
+                                    </div>
+                                </div>
+                                <div class="text-xs text-slate-400 w-24 text-right">${hitPct}% hit / ${missPct}% miss</div>
+                                <div class="text-xs text-slate-500 w-16 text-right">${l.signal_count} sigs</div>
+                            </div>`;
+                        }).join('');
+                    }
+                }
+
+                // Load signals table
+                loadSignals(false);
+
+                // ── Trade P&L ──
+                if (tradeResp && tradeResp.ok) {
+                    const stats = await tradeResp.json();
+
+                    if (stats.closed_trades === 0) {
+                        document.getElementById('perf-empty').classList.remove('hidden');
+                        document.getElementById('perf-trades-content').classList.add('hidden');
+                    } else {
+                        document.getElementById('perf-empty').classList.add('hidden');
+                        document.getElementById('perf-trades-content').classList.remove('hidden');
+
+                        const pnlEl = document.getElementById('perf-pnl');
+                        pnlEl.textContent = formatPnl(stats.total_pnl);
+                        pnlEl.className = `text-3xl font-bold mt-2 ${pnlClass(stats.total_pnl)}`;
+
+                        document.getElementById('perf-winrate').textContent = `${(stats.win_rate * 100).toFixed(0)}%`;
+                        document.getElementById('perf-avgwin').textContent = formatPnl(stats.avg_win);
+                        document.getElementById('perf-avgloss').textContent = formatPnl(stats.avg_loss);
+                        document.getElementById('perf-total').textContent = stats.total_trades;
+                        document.getElementById('perf-wl').textContent = `${stats.win_count}W / ${stats.loss_count}L`;
+                        document.getElementById('perf-best').textContent = formatPnl(stats.best_trade);
+                        document.getElementById('perf-worst').textContent = formatPnl(stats.worst_trade);
+                    }
+                }
+            } catch (e) {
+                document.getElementById('perf-error').classList.remove('hidden');
+                document.getElementById('perf-content').classList.add('hidden');
+            }
+        }
+
+        async function loadSignals(tradeWorthyOnly) {
+            try {
+                const params = new URLSearchParams({ limit: '30' });
+                if (tradeWorthyOnly) params.set('trade_worthy_only', 'true');
+                const resp = await fetch(`${API}/api/v1/performance/signals?${params}`);
+                if (!resp.ok) return;
+                const signals = await resp.json();
+
+                const body = document.getElementById('signals-body');
+                if (signals.length === 0) {
+                    body.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No signals recorded yet. Signals will appear here after the next scan.</div>';
                     return;
                 }
 
-                document.getElementById('perf-empty').classList.add('hidden');
-                document.getElementById('perf-content').classList.remove('hidden');
+                body.innerHTML = signals.map(s => {
+                    const dirColor = s.direction === 'BULLISH' ? 'text-emerald-400' : 'text-red-400';
+                    const dirArrow = s.direction === 'BULLISH' ? '\u25B2' : '\u25BC';
+                    const twBadge = s.trade_worthy ? '<span class="text-[9px] bg-cyan-900/50 text-cyan-300 px-1 rounded">TW</span>' : '';
 
-                const pnlEl = document.getElementById('perf-pnl');
-                pnlEl.textContent = formatPnl(stats.total_pnl);
-                pnlEl.className = `text-3xl font-bold mt-2 ${pnlClass(stats.total_pnl)}`;
+                    function retCell(val, hit) {
+                        if (val === null || val === undefined) return '<span class="text-slate-600">\u2014</span>';
+                        const color = val > 0 ? 'text-emerald-400' : val < 0 ? 'text-red-400' : 'text-slate-400';
+                        const icon = hit === true ? '\u2713' : hit === false ? '\u2717' : '';
+                        return `<span class="${color}">${val > 0 ? '+' : ''}${val}%</span> <span class="text-[9px] ${hit ? 'text-emerald-400' : 'text-red-400'}">${icon}</span>`;
+                    }
 
-                document.getElementById('perf-winrate').textContent = `${(stats.win_rate * 100).toFixed(0)}%`;
-                document.getElementById('perf-avgwin').textContent = formatPnl(stats.avg_win);
-                document.getElementById('perf-avgloss').textContent = formatPnl(stats.avg_loss);
-                document.getElementById('perf-total').textContent = stats.total_trades;
-                document.getElementById('perf-wl').textContent = `${stats.win_count}W / ${stats.loss_count}L`;
-                document.getElementById('perf-best').textContent = formatPnl(stats.best_trade);
-                document.getElementById('perf-worst').textContent = formatPnl(stats.worst_trade);
+                    const dateStr = s.signal_date ? s.signal_date.split('T')[0] : '';
+
+                    return `<div class="grid grid-cols-12 gap-2 px-4 py-2 text-xs border-b border-slate-700/50 hover:bg-slate-700/30">
+                        <div class="col-span-1 font-semibold text-white">${s.ticker} ${twBadge}</div>
+                        <div class="col-span-1 ${dirColor}">${dirArrow} ${s.direction.slice(0,4)}</div>
+                        <div class="col-span-1 text-white">${s.conviction_pct}%</div>
+                        <div class="col-span-1 text-slate-300">${s.active_layers}</div>
+                        <div class="col-span-2 text-slate-300">$${s.entry_price ? s.entry_price.toFixed(2) : '\u2014'}</div>
+                        <div class="col-span-1">${retCell(s.return_t1, null)}</div>
+                        <div class="col-span-1">${retCell(s.return_t5, s.hit_t5)}</div>
+                        <div class="col-span-1">${retCell(s.return_t10, null)}</div>
+                        <div class="col-span-1">${retCell(s.return_t20, null)}</div>
+                        <div class="col-span-2 text-slate-500">${dateStr}</div>
+                    </div>`;
+                }).join('');
             } catch (e) {
-                document.getElementById('perf-error').classList.remove('hidden');
-                document.getElementById('perf-empty').classList.add('hidden');
-                document.getElementById('perf-content').classList.add('hidden');
+                // Silently fail — signals table is supplementary
+            }
+        }
+
+        async function triggerGrading() {
+            try {
+                const resp = await fetch(`${API}/api/v1/performance/grade`, { method: 'POST' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    alert(`Graded ${data.graded} signal(s). Refreshing...`);
+                    loadPerformance();
+                }
+            } catch (e) {
+                alert('Grading failed: ' + e.message);
             }
         }
 

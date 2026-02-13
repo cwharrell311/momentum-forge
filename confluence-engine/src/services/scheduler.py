@@ -16,7 +16,7 @@ How it works:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -100,6 +100,17 @@ async def run_confluence_scan() -> None:
         except Exception as e:
             logger.warning(f"Auto-journal failed: {e}")
 
+        # Forward testing: record qualifying signals for grading
+        try:
+            from src.services.signal_tracker import record_signals
+
+            regime_str = regime.value if regime else None
+            recorded = await record_signals(scores, regime_str)
+            if recorded:
+                logger.info(f"Signal tracker: {recorded} new signal(s) recorded for forward testing")
+        except Exception as e:
+            logger.debug(f"Signal tracker skipped: {e}")
+
         logger.info(
             f"Scan complete: {len(scores)} tickers with signals "
             f"(out of {len(tickers)} scanned) — cached."
@@ -129,9 +140,31 @@ def start_scheduler(interval_seconds: int = 300) -> AsyncIOScheduler:
         next_run_time=datetime.now(),  # Run immediately on startup
     )
 
+    # Grade past signals every 2 hours (no rush — outcome prices don't change fast)
+    _scheduler.add_job(
+        _run_signal_grading,
+        trigger="interval",
+        seconds=7200,  # 2 hours
+        id="signal_grading",
+        name="Grade past signals",
+        next_run_time=datetime.now() + timedelta(seconds=120),  # First run 2 min after startup
+    )
+
     _scheduler.start()
-    logger.info(f"Scheduler started — scanning every {interval_seconds}s")
+    logger.info(f"Scheduler started — scanning every {interval_seconds}s, grading every 2h")
     return _scheduler
+
+
+async def _run_signal_grading() -> None:
+    """Run the signal grading job — fills in outcome prices for past signals."""
+    try:
+        from src.services.signal_tracker import grade_signals
+
+        graded = await grade_signals()
+        if graded:
+            logger.info(f"Signal grading: updated {graded} signal(s)")
+    except Exception as e:
+        logger.debug(f"Signal grading skipped: {e}")
 
 
 async def _save_scan_history(scores, regime) -> None:
