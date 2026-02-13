@@ -105,8 +105,8 @@ def init_app(
     # ── Alpaca-powered processors (no quota limit) ──
     momentum = MomentumProcessor(alpaca_client=_alpaca_client)
 
-    # ── FMP-powered processors (free tier — now only used for VIX) ──
-    vix = VixRegimeProcessor(fmp_client=_fmp_client)
+    # ── Alpaca-powered regime (computed from SPY realized vol — no FMP quota) ──
+    vix = VixRegimeProcessor(alpaca_client=_alpaca_client)
     insider = InsiderProcessor(fmp_client=_fmp_client, uw_client=_uw_client)
     _vix_processor = vix
 

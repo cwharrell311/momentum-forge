@@ -1,33 +1,38 @@
 """
-VIX Regime Filter
+Volatility Regime Filter (via Alpaca SPY bars)
 
 This is NOT a trade signal — it's a context signal that modifies how
 the confluence engine weights other layers. When the market is stressed,
 bullish signals should be discounted and bearish signals amplified.
 
-Regime classification:
-- CALM:     VIX < 15, futures in contango       -> Risk-on, trust bullish flow
-- ELEVATED: VIX 15-25, normal                   -> Balanced weighting
-- STRESSED: VIX 25-35, futures in backwardation  -> Discount bullish, boost bearish
-- CRISIS:   VIX > 35, deep backwardation         -> Heavy bearish bias, cash is king
+Uses 20-day realized volatility of SPY (annualized) as a proxy for VIX.
+This is what VIX measures anyway — expected S&P 500 volatility — and it
+uses zero FMP quota (Alpaca has no rate limit for bars).
+
+Regime classification (realized vol thresholds):
+- CALM:     RV < 12    -> Risk-on, trust bullish flow
+- ELEVATED: RV 12-22   -> Balanced weighting
+- STRESSED: RV 22-32   -> Discount bullish, boost bearish
+- CRISIS:   RV > 32    -> Heavy bearish bias, cash is king
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 
 from src.signals.base import Direction, Regime, SignalProcessor, SignalResult
-from src.utils.data_providers import FMPClient
+from src.utils.data_providers import AlpacaClient
 
 log = logging.getLogger(__name__)
 
 
 class VixRegimeProcessor(SignalProcessor):
-    """VIX regime classification using FMP API."""
+    """Volatility regime classification using Alpaca SPY bars."""
 
-    def __init__(self, fmp_client: FMPClient):
-        self._fmp = fmp_client
+    def __init__(self, alpaca_client: AlpacaClient):
+        self._alpaca = alpaca_client
         self._cached_regime: Regime | None = None
 
     @property
@@ -48,14 +53,22 @@ class VixRegimeProcessor(SignalProcessor):
         return [result] if result else []
 
     async def scan_single(self, ticker: str = "VIX") -> SignalResult | None:
-        """Classify current VIX regime."""
+        """Classify current volatility regime from SPY realized vol."""
         try:
-            vix_quote = await self._fmp.get_vix_quote()
-            if not vix_quote:
+            # Fetch 30 days of SPY bars to compute 20-day realized vol
+            bars = await self._alpaca.get_bars("SPY", timeframe="1Day", limit=30)
+            if not bars or len(bars) < 5:
+                log.warning("Not enough SPY bars for regime calculation")
                 return None
 
-            vix_level = vix_quote.get("price", 20)
-            regime = self._classify_regime(vix_level)
+            # Extract daily close prices
+            closes = [bar["c"] for bar in bars if "c" in bar]
+            if len(closes) < 5:
+                return None
+
+            # Compute annualized realized volatility (20-day window or available)
+            rv = self._realized_volatility(closes)
+            regime = self._classify_regime(rv)
 
             # Determine directional bias from regime
             if regime == Regime.CALM:
@@ -78,32 +91,56 @@ class VixRegimeProcessor(SignalProcessor):
                 layer=self.name,
                 direction=direction,
                 strength=strength,
-                confidence=0.9,  # VIX data is very reliable
+                confidence=0.85,
                 timestamp=datetime.utcnow(),
                 metadata={
                     "regime": regime.value,
-                    "vix_level": vix_level,
-                    "vix_change": vix_quote.get("changesPercentage", 0),
+                    "realized_vol": round(rv, 1),
+                    "spy_bars_used": len(closes),
                 },
-                explanation=self._build_explanation(regime, vix_level),
+                explanation=self._build_explanation(regime, rv),
             )
 
         except Exception as e:
-            log.error("VIX regime check failed: %s", e)
+            log.error("Volatility regime check failed: %s", e)
             return None
 
-    def _classify_regime(self, vix_level: float) -> Regime:
-        """Classify regime based on VIX level."""
-        if vix_level < 15:
+    def _realized_volatility(self, closes: list[float]) -> float:
+        """
+        Compute annualized realized volatility from daily closes.
+
+        Formula: stdev(daily log returns) * sqrt(252)
+        Uses all available closes (up to 30 days).
+        """
+        # Daily log returns
+        returns = []
+        for i in range(1, len(closes)):
+            if closes[i - 1] > 0:
+                returns.append(math.log(closes[i] / closes[i - 1]))
+
+        if len(returns) < 3:
+            return 20.0  # Default to elevated if not enough data
+
+        # Standard deviation of returns
+        mean = sum(returns) / len(returns)
+        variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+        daily_vol = math.sqrt(variance)
+
+        # Annualize and convert to percentage (same scale as VIX)
+        return daily_vol * math.sqrt(252) * 100
+
+    def _classify_regime(self, realized_vol: float) -> Regime:
+        """Classify regime based on annualized realized volatility."""
+        if realized_vol < 12:
             return Regime.CALM
-        elif vix_level < 25:
+        elif realized_vol < 22:
             return Regime.ELEVATED
-        elif vix_level < 35:
+        elif realized_vol < 32:
             return Regime.STRESSED
         else:
             return Regime.CRISIS
 
-    def _build_explanation(self, regime: Regime, vix_level: float) -> str:
+    def _build_explanation(self, regime: Regime, realized_vol: float) -> str:
         """Human-readable regime explanation."""
         descriptions = {
             Regime.CALM: "Risk-on environment.",
@@ -113,6 +150,6 @@ class VixRegimeProcessor(SignalProcessor):
         }
         return (
             f"Market regime: {regime.value.upper()}. "
-            f"VIX at {vix_level:.1f}. "
+            f"SPY realized vol {realized_vol:.1f}%. "
             f"{descriptions[regime]}"
         )
