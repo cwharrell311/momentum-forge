@@ -399,6 +399,7 @@ class AlpacaClient:
                     "limit": limit,
                     "start": start_date,
                     "sort": "desc",
+                    "adjustment": "split",
                 }
                 if feed:
                     params["feed"] = feed
