@@ -20,7 +20,7 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - **Data sources:** Alpaca (momentum bars), FMP API (VIX, insider), Unusual Whales API (options flow, GEX, vol surface, dark pool, short interest)
 - **Containerization:** Docker Compose for full stack (PostgreSQL + Redis + API)
 
-## Current State (v0.3.2 — Feb 13, 2025)
+## Current State (v0.3.3 — Feb 13, 2025)
 
 **All 8 signal layers are fully implemented:**
 
@@ -39,8 +39,9 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Dashboard: 5 tabs (Screener, Journal, Performance, Broker, System) — Watchlist tab removed
 - Flow gate: options_flow MUST agree with direction + GEX or volatility confirm before trade-worthy
 - Caching: In-memory result cache (zero API calls per page load)
-- Scheduler: 15-min scan interval (configurable via SCAN_INTERVAL)
+- Scheduler: 15-min scan interval (configurable via SCAN_INTERVAL) + 2-hour signal grading job
 - Auto-journal: logs qualifying setups (60%+ conviction, 3+ layers) automatically
+- Signal tracker: forward-tests every qualifying signal (40%+ conviction, 2+ layers) against actual price outcomes
 - Trade journal: CRUD with P&L tracking
 - Broker: Alpaca paper trading integration (account, positions, orders)
 - System: FMP quota tracking, signal layer status panel
@@ -49,7 +50,17 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Index filtering: SPXW, SPX, VIX etc. filtered from universe discovery
 - Direction-aware UI: green=bullish, red=bearish, yellow=dark pool conflict
 
-**Key changes from Feb 13 session:**
+**Key changes from Feb 13 session (v0.3.3):**
+- Built signal forward-testing scorecard system — answers "Are these signals actually predictive?"
+- New `signal_history` table records every qualifying signal with price at fire time
+- `signal_tracker.py` service: records signals after each scan, grades past signals against T+1/5/10/20 outcomes
+- Grading job runs every 2 hours, looks up actual Alpaca closing prices and computes hit rates + returns
+- New Performance API: `/api/v1/performance/scorecard`, `/by-layer`, `/signals`, `/grade`, `/stats`
+- Performance tab redesigned: signal scorecard (hit rates by horizon, conviction buckets, trade-worthy comparison, layer accuracy bars, signal browser table) + existing trade P&L stats
+- Lower recording threshold (40% conviction, 2 layers) than auto-journal (60%, 3) to capture more data for analysis
+- One signal per ticker per day deduplication
+
+**Key changes from earlier Feb 13 session (v0.3.2):**
 - Fixed intraday charts not rendering — root cause: charts were initializing via setTimeout during renderDetail() while the detail panel was still hidden (max-height:0). The dataset.loaded flag then prevented re-initialization when the panel opened.
 - Fix: moved chart loading to toggleDetail() so it fires when the panel opens and container has visible dimensions
 - Added autoSize:true to lightweight-charts options for proper container-aware sizing
@@ -136,12 +147,14 @@ confluence-engine/
 │   │       ├── trades.py       # Trade journal with P&L
 │   │       ├── broker.py       # Alpaca: account, positions, orders
 │   │       ├── system.py       # Status, quota, signal layers, diagnostics
-│   │       └── regime.py       # GET /regime (VIX regime)
+│   │       ├── regime.py       # GET /regime (VIX regime)
+│   │       └── performance.py  # Signal scorecard: hit rates, layer accuracy, signal browser
 │   ├── services/
 │   │   ├── confluence.py       # Core scoring engine (weighted + confluence multiplier + flow gate)
 │   │   ├── cache.py            # In-memory result cache (ResultCache, thread-safe)
-│   │   ├── scheduler.py        # APScheduler: periodic scans -> cache + DB + auto-journal
-│   │   └── auto_journal.py     # Auto-log trade setups when signals fire
+│   │   ├── scheduler.py        # APScheduler: periodic scans -> cache + DB + auto-journal + signal tracking
+│   │   ├── auto_journal.py     # Auto-log trade setups when signals fire
+│   │   └── signal_tracker.py   # Forward testing: record signals + grade against T+1/5/10/20 outcomes
 │   ├── signals/
 │   │   ├── base.py             # ABC, SignalResult, Direction, Regime, ConfluenceScore
 │   │   ├── momentum.py         # ACTIVE: Alpaca bars → MA alignment, golden cross, volume
