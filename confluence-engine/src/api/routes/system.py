@@ -30,6 +30,7 @@ class ApiQuotaStatus(BaseModel):
     provider: str
     calls_today: int
     errors_today: int
+    rate_limited_today: int = 0
     quota_limit: int
     quota_remaining: int
     quota_pct_used: float
@@ -99,6 +100,7 @@ async def system_status():
             provider="Unusual Whales",
             calls_today=uw_status["calls_today"],
             errors_today=uw_status["errors_today"],
+            rate_limited_today=uw_status.get("rate_limited_today", 0),
             quota_limit=uw_status["quota_limit"],
             quota_remaining=uw_status["quota_remaining"],
             quota_pct_used=uw_status["quota_pct_used"],
@@ -321,3 +323,121 @@ async def clear_auto_journal_session():
 
     clear_session_log()
     return {"status": "cleared"}
+
+
+@router.get("/bars/{ticker}/intraday")
+async def intraday_bars(ticker: str):
+    """
+    Get today's intraday price bars (5-min) for charting.
+
+    Returns OHLC bars from market open to now, suitable for
+    lightweight-charts rendering on the dashboard.
+    """
+    from datetime import datetime as _dt
+
+    from src.api.dependencies import get_alpaca_client
+    from src.config import get_settings
+    from src.utils.data_providers import AlpacaClient
+
+    alpaca = get_alpaca_client()
+    if not alpaca or not alpaca.is_configured:
+        settings = get_settings()
+        alpaca = AlpacaClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+            base_url=settings.alpaca_base_url,
+        )
+        if not alpaca.is_configured:
+            return {"error": "Alpaca not configured"}
+
+    ticker = ticker.upper()
+    bars = await alpaca.get_bars(ticker, timeframe="5Min", limit=80)
+
+    if not bars:
+        return {"ticker": ticker, "bars": []}
+
+    # Format for lightweight-charts: { time, open, high, low, close }
+    chart_bars = []
+    for b in bars:
+        ts = b.get("t", "")
+        try:
+            if "T" in ts:
+                dt = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                unix = int(dt.timestamp())
+            else:
+                unix = 0
+        except Exception:
+            unix = 0
+
+        chart_bars.append({
+            "time": unix,
+            "open": b["o"],
+            "high": b["h"],
+            "low": b["l"],
+            "close": b["c"],
+            "volume": b.get("v", 0),
+        })
+
+    return {"ticker": ticker, "bars": chart_bars}
+
+
+@router.get("/debug/bars/{ticker}")
+async def debug_bars(ticker: str, limit: int = 5):
+    """
+    Diagnostic: show raw Alpaca bars for a ticker.
+
+    Returns the most recent N bars exactly as Alpaca returns them,
+    plus what the momentum processor would compute as the price.
+    Use this to verify whether Alpaca data matches real market prices.
+    """
+    from src.api.dependencies import get_alpaca_client
+    from src.config import get_settings
+    from src.utils.data_providers import AlpacaClient
+
+    alpaca = get_alpaca_client()
+    if not alpaca or not alpaca.is_configured:
+        # Fallback: create a temporary client from settings
+        settings = get_settings()
+        alpaca = AlpacaClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+            base_url=settings.alpaca_base_url,
+        )
+        if not alpaca.is_configured:
+            return {"error": "Alpaca not configured — check ALPACA_API_KEY in .env"}
+
+    ticker = ticker.upper()
+    bars = await alpaca.get_bars(ticker, timeframe="1Day", limit=252)
+
+    if not bars:
+        return {"error": f"No bars returned for {ticker}", "ticker": ticker}
+
+    # Show what the momentum processor sees
+    closes = [b["c"] for b in bars]
+    computed_price = closes[-1]  # This is what shows on the dashboard
+
+    # Most recent N bars (the tail, which is the newest after reversal)
+    recent = bars[-limit:]
+
+    return {
+        "ticker": ticker,
+        "total_bars": len(bars),
+        "computed_price": round(computed_price, 2),
+        "computed_change_pct": round(
+            ((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 else 0, 2
+        ),
+        "first_bar_date": bars[0].get("t", "?"),
+        "last_bar_date": bars[-1].get("t", "?"),
+        "recent_bars": [
+            {
+                "date": b.get("t", "?"),
+                "open": b["o"],
+                "high": b["h"],
+                "low": b["l"],
+                "close": b["c"],
+                "volume": b["v"],
+                "vwap": b.get("vw"),
+            }
+            for b in recent
+        ],
+    }

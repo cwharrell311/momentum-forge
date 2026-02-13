@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     scan_interval: int = 900  # seconds between full scans (15 min saves API quota)
     universe_discovery: bool = True  # Use UW market flow to find active tickers beyond watchlist
-    universe_max_tickers: int = 200  # Max tickers to pull from UW market flow
+    universe_max_tickers: int = 50  # Max tickers from UW flow (50×7calls×4scans×6.5hrs ≈ 9K/day, under 15K limit)
 
     # ── Auto-Trading ──
     auto_trade_enabled: bool = False       # Master switch — set true to enable

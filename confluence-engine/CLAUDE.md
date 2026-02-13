@@ -20,7 +20,7 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - **Data sources:** Alpaca (momentum bars), FMP API (VIX, insider), Unusual Whales API (options flow, GEX, vol surface, dark pool, short interest)
 - **Containerization:** Docker Compose for full stack (PostgreSQL + Redis + API)
 
-## Current State (v0.3.0 — Feb 11, 2025)
+## Current State (v0.3.3 — Feb 13, 2025)
 
 **All 8 signal layers are fully implemented:**
 
@@ -39,8 +39,9 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Dashboard: 5 tabs (Screener, Journal, Performance, Broker, System) — Watchlist tab removed
 - Flow gate: options_flow MUST agree with direction + GEX or volatility confirm before trade-worthy
 - Caching: In-memory result cache (zero API calls per page load)
-- Scheduler: 15-min scan interval (configurable via SCAN_INTERVAL)
+- Scheduler: 15-min scan interval (configurable via SCAN_INTERVAL) + 2-hour signal grading job
 - Auto-journal: logs qualifying setups (60%+ conviction, 3+ layers) automatically
+- Signal tracker: forward-tests every qualifying signal (40%+ conviction, 2+ layers) against actual price outcomes
 - Trade journal: CRUD with P&L tracking
 - Broker: Alpaca paper trading integration (account, positions, orders)
 - System: FMP quota tracking, signal layer status panel
@@ -48,6 +49,40 @@ Chris — a financial controller / accountant with 20 years of finance experienc
 - Universe: 35 default tickers in watchlist.yaml (mega-cap, high-momentum, blue chip, sector ETFs, memes)
 - Index filtering: SPXW, SPX, VIX etc. filtered from universe discovery
 - Direction-aware UI: green=bullish, red=bearish, yellow=dark pool conflict
+
+**Key changes from Feb 13 session (v0.3.3):**
+- Built signal forward-testing scorecard system — answers "Are these signals actually predictive?"
+- New `signal_history` table records every qualifying signal with price at fire time
+- `signal_tracker.py` service: records signals after each scan, grades past signals against T+1/5/10/20 outcomes
+- Grading job runs every 2 hours, looks up actual Alpaca closing prices and computes hit rates + returns
+- New Performance API: `/api/v1/performance/scorecard`, `/by-layer`, `/signals`, `/grade`, `/stats`
+- Performance tab redesigned: signal scorecard (hit rates by horizon, conviction buckets, trade-worthy comparison, layer accuracy bars, signal browser table) + existing trade P&L stats
+- Lower recording threshold (40% conviction, 2 layers) than auto-journal (60%, 3) to capture more data for analysis
+- One signal per ticker per day deduplication
+
+**Key changes from earlier Feb 13 session (v0.3.2):**
+- Fixed intraday charts not rendering — root cause: charts were initializing via setTimeout during renderDetail() while the detail panel was still hidden (max-height:0). The dataset.loaded flag then prevented re-initialization when the panel opened.
+- Fix: moved chart loading to toggleDetail() so it fires when the panel opens and container has visible dimensions
+- Added autoSize:true to lightweight-charts options for proper container-aware sizing
+
+**Key changes from v0.3.0 (Feb 12 session):**
+- Fixed UW 429 rate limit cascade — root cause: 5 parallel processors × 85 tickers overwhelming shared rate limiter
+- UW rate limiter tuned: 1.5 req/sec burst 3 → 1.8 req/sec burst 8
+- Added asyncio.Semaphore(3) to cap concurrent UW requests across all processors
+- Added daily quota guard: skips calls when within 500 of 15K/day limit
+- Added 30s global cooldown after 5 consecutive 429s (lets UW minute window reset)
+- UW client now reads rate limit headers (x-uw-daily-req-count, x-uw-req-per-minute-remaining)
+- 429 retries reduced from 2→1, backoff increased from 2s/4s→5s/10s
+- UW rate_limited_count now tracked and shown in System tab
+- universe_max_tickers default reduced from 200→50 (keeps daily calls ~9K, under 15K limit)
+- Added diagnostic endpoint: GET /api/v1/system/debug/bars/{ticker} — shows raw Alpaca bar data to verify prices
+
+**Known issue (in progress):**
+- Dashboard shows WRONG stock prices for some tickers (QQQ shows $821.87, real price ~$613; PLTR $146.59 vs ~$136; TSLA ~correct)
+- Price chain traced: Alpaca bars → momentum.py `closes[-1]` → metadata["price"] → dashboard
+- Code logic is correct — suspect Alpaca is returning incorrect bar data for some tickers
+- Debug endpoint added to inspect raw bars, but Chris hasn't been able to hit it yet (port conflict between Docker API container and local uvicorn on port 8000)
+- **Next step:** Chris needs to `git pull` latest code, stop one of the two port-8000 processes, then test `http://localhost:8000/api/v1/system/debug/bars/QQQ` to see raw Alpaca data
 
 **Key changes from v0.2.0:**
 - Momentum layer switched from FMP to Alpaca (no quota limit, better data)
@@ -112,12 +147,14 @@ confluence-engine/
 │   │       ├── trades.py       # Trade journal with P&L
 │   │       ├── broker.py       # Alpaca: account, positions, orders
 │   │       ├── system.py       # Status, quota, signal layers, diagnostics
-│   │       └── regime.py       # GET /regime (VIX regime)
+│   │       ├── regime.py       # GET /regime (VIX regime)
+│   │       └── performance.py  # Signal scorecard: hit rates, layer accuracy, signal browser
 │   ├── services/
 │   │   ├── confluence.py       # Core scoring engine (weighted + confluence multiplier + flow gate)
 │   │   ├── cache.py            # In-memory result cache (ResultCache, thread-safe)
-│   │   ├── scheduler.py        # APScheduler: periodic scans -> cache + DB + auto-journal
-│   │   └── auto_journal.py     # Auto-log trade setups when signals fire
+│   │   ├── scheduler.py        # APScheduler: periodic scans -> cache + DB + auto-journal + signal tracking
+│   │   ├── auto_journal.py     # Auto-log trade setups when signals fire
+│   │   └── signal_tracker.py   # Forward testing: record signals + grade against T+1/5/10/20 outcomes
 │   ├── signals/
 │   │   ├── base.py             # ABC, SignalResult, Direction, Regime, ConfluenceScore
 │   │   ├── momentum.py         # ACTIVE: Alpaca bars → MA alignment, golden cross, volume

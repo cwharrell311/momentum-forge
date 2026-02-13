@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import date
 
 import httpx
@@ -344,6 +345,26 @@ class AlpacaClient:
         """Close an entire position for a ticker (sell all shares)."""
         return await self._request("DELETE", f"positions/{ticker}")
 
+    # ── Asset Info ─────────────────────────────────────────────
+
+    _asset_name_cache: dict[str, str] = {}
+
+    async def get_asset_name(self, ticker: str) -> str:
+        """Get company name from Alpaca assets API. Cached in memory."""
+        if ticker in self._asset_name_cache:
+            return self._asset_name_cache[ticker]
+
+        try:
+            data = await self._request("GET", f"assets/{ticker}")
+            if data and isinstance(data, dict):
+                name = data.get("name", ticker)
+                self._asset_name_cache[ticker] = name
+                return name
+        except Exception:
+            pass
+        self._asset_name_cache[ticker] = ticker
+        return ticker
+
     # ── Market Data API ──────────────────────────────────────────
 
     async def get_bars(
@@ -398,6 +419,7 @@ class AlpacaClient:
                     "limit": limit,
                     "start": start_date,
                     "sort": "desc",
+                    "adjustment": "split",
                 }
                 if feed:
                     params["feed"] = feed
@@ -491,12 +513,23 @@ class UnusualWhalesClient:
             timeout=30.0,
             headers={"Authorization": f"Bearer {api_key}"},
         )
-        # UW Basic: 120 req/min = 2 req/sec steady state
-        self._limiter = RateLimiter(rate=1.5, max_tokens=3)
+        # UW Basic: 120 req/min = 2 req/sec steady state.
+        # Burst of 8 absorbs initial parallel startup without immediately
+        # queueing. Rate of 1.8/sec stays safely under 120/min (108/min actual).
+        self._limiter = RateLimiter(rate=1.8, max_tokens=8)
+        # Concurrency control: 5 signal processors fire via asyncio.gather(),
+        # each calling UW sequentially per ticker. Without a semaphore, all 5
+        # queue up on the rate limiter simultaneously, building a backlog that
+        # triggers 429 cascades. Semaphore of 3 ensures smooth pacing.
+        self._semaphore = asyncio.Semaphore(3)
         # Quota tracking
         self._call_count = 0
         self._error_count = 0
+        self._rate_limited_count = 0
         self._last_reset_date: str = _today()
+        # Cooldown: activated when 429s cascade, pauses all calls
+        self._cooldown_until: float = 0.0
+        self._consecutive_429s: int = 0
 
     def _check_date_reset(self) -> None:
         """Reset counters if it's a new day."""
@@ -504,6 +537,9 @@ class UnusualWhalesClient:
         if today != self._last_reset_date:
             self._call_count = 0
             self._error_count = 0
+            self._rate_limited_count = 0
+            self._consecutive_429s = 0
+            self._cooldown_until = 0.0
             self._last_reset_date = today
 
     @property
@@ -518,56 +554,144 @@ class UnusualWhalesClient:
         return {
             "calls_today": self._call_count,
             "errors_today": self._error_count,
+            "rate_limited_today": self._rate_limited_count,
             "quota_limit": self.DAILY_QUOTA,
             "quota_remaining": max(0, self.DAILY_QUOTA - self._call_count),
             "quota_pct_used": round(self._call_count / self.DAILY_QUOTA * 100, 1),
             "date": self._last_reset_date,
         }
 
-    async def _get(self, path: str, params: dict | None = None, retries: int = 2) -> dict | list | None:
-        """Make a rate-limited GET request to Unusual Whales with retry on transient errors."""
+    def _read_rate_headers(self, resp: httpx.Response) -> None:
+        """Read UW rate limit headers to self-correct our pacing."""
+        try:
+            remaining = resp.headers.get("x-uw-req-per-minute-remaining")
+            if remaining is not None:
+                remaining_int = int(remaining)
+                if remaining_int < 10:
+                    log.info(
+                        "UW per-minute remaining: %d — approaching limit", remaining_int
+                    )
+            # Daily count from UW (more accurate than our local counter)
+            daily = resp.headers.get("x-uw-daily-req-count")
+            if daily is not None:
+                server_count = int(daily)
+                # Sync if our counter has drifted significantly
+                if abs(server_count - self._call_count) > 50:
+                    log.debug(
+                        "UW daily count drift: ours=%d server=%d — syncing",
+                        self._call_count, server_count,
+                    )
+                    self._call_count = server_count
+        except (ValueError, TypeError):
+            pass
+
+    async def _get(self, path: str, params: dict | None = None, retries: int = 1) -> dict | list | None:
+        """
+        Make a rate-limited GET request to Unusual Whales.
+
+        Protections against 429 cascades:
+        1. Daily quota guard — stops calls when near 15K/day limit
+        2. Global cooldown — pauses all calls after repeated 429s
+        3. Semaphore — limits concurrent in-flight requests to 3
+        4. Rate limiter — token bucket at 1.8 req/sec, burst of 8
+        5. Backoff — 5s/10s wait on 429 (longer than the old 2s/4s)
+        """
         if not self.api_key:
             return None
 
         self._check_date_reset()
 
+        # Guard: skip calls when daily quota is nearly exhausted.
+        # Reserve 500 calls for critical operations (flow discovery, VIX).
+        if self._call_count >= self.DAILY_QUOTA - 500:
+            log.warning(
+                "UW quota nearly exhausted: %d/%d used — skipping %s. "
+                "Increase SCAN_INTERVAL or reduce UNIVERSE_MAX_TICKERS.",
+                self._call_count, self.DAILY_QUOTA, path,
+            )
+            return None
+
+        # Global cooldown: after a burst of 429s, pause all requests
+        # to let UW's per-minute counter reset.
+        now = time.monotonic()
+        if self._cooldown_until > now:
+            log.debug(
+                "UW in cooldown (%.0fs left) — skipping %s",
+                self._cooldown_until - now, path,
+            )
+            return None
+
         url = f"{self.BASE_URL}/{path}"
 
-        for attempt in range(retries + 1):
-            await self._limiter.acquire()
-            try:
-                self._call_count += 1
-                resp = await self._client.get(url, params=params)
-                if resp.status_code == 429:
+        async with self._semaphore:
+            for attempt in range(retries + 1):
+                await self._limiter.acquire()
+                try:
+                    self._call_count += 1
+                    resp = await self._client.get(url, params=params)
+
+                    # Read rate limit headers for self-correction
+                    self._read_rate_headers(resp)
+
+                    if resp.status_code == 429:
+                        self._rate_limited_count += 1
+                        self._consecutive_429s += 1
+
+                        # After 5 consecutive 429s, activate 30s global cooldown
+                        # so UW's per-minute window can fully reset
+                        if self._consecutive_429s >= 5:
+                            self._cooldown_until = time.monotonic() + 30.0
+                            log.warning(
+                                "UW 429 flood (%d consecutive) on %s — "
+                                "entering 30s global cooldown",
+                                self._consecutive_429s, path,
+                            )
+                            return None
+
+                        if attempt < retries:
+                            wait = 5 * (attempt + 1)  # 5s, 10s
+                            log.warning(
+                                "UW rate limited (429): %s — waiting %ds "
+                                "(attempt %d/%d)",
+                                path, wait, attempt + 1, retries + 1,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+
+                        log.warning(
+                            "UW rate limited (429): %s — skipping", path
+                        )
+                        return None
+
+                    resp.raise_for_status()
+                    self._consecutive_429s = 0  # Reset streak on success
+                    data = resp.json()
+                    # Log response shape for debugging
+                    if isinstance(data, list):
+                        log.debug("UW %s → %d items", path, len(data))
+                    elif isinstance(data, dict):
+                        keys = list(data.keys())[:5]
+                        log.debug("UW %s → dict keys: %s", path, keys)
+                    return data
+                except httpx.HTTPStatusError as e:
+                    self._error_count += 1
+                    log.error("UW API error (%d): %s", e.response.status_code, path)
+                    return None  # Don't retry HTTP errors
+                except httpx.RequestError as e:
+                    self._error_count += 1
                     if attempt < retries:
-                        wait = 2 ** (attempt + 1)  # 2s, 4s backoff
-                        log.warning("UW rate limited (429): %s — retrying in %ds", path, wait)
+                        wait = 2 ** (attempt + 1)  # 2s, 4s
+                        log.warning(
+                            "UW request failed (attempt %d/%d): %s — retrying in %ds",
+                            attempt + 1, retries + 1, e, wait,
+                        )
                         await asyncio.sleep(wait)
-                        continue
-                    log.warning("UW rate limited (429): %s — giving up after %d retries", path, retries)
-                    return None
-                resp.raise_for_status()
-                data = resp.json()
-                # Log response shape for debugging
-                if isinstance(data, list):
-                    log.debug("UW %s → %d items", path, len(data))
-                elif isinstance(data, dict):
-                    keys = list(data.keys())[:5]
-                    log.debug("UW %s → dict keys: %s", path, keys)
-                return data
-            except httpx.HTTPStatusError as e:
-                self._error_count += 1
-                log.error("UW API error (%d): %s", e.response.status_code, path)
-                return None  # Don't retry HTTP errors
-            except httpx.RequestError as e:
-                self._error_count += 1
-                if attempt < retries:
-                    wait = 2 ** attempt
-                    log.warning("UW request failed (attempt %d/%d): %s — retrying in %ds", attempt + 1, retries + 1, e, wait)
-                    await asyncio.sleep(wait)
-                else:
-                    log.error("UW request failed after %d attempts: %s", retries + 1, e)
-                    return None
+                    else:
+                        log.error(
+                            "UW request failed after %d attempts: %s",
+                            retries + 1, e,
+                        )
+                        return None
 
     # ── Options Flow ─────────────────────────────────────────────
 
