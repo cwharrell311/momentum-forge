@@ -11,7 +11,9 @@ Usage:
 """
 
 import argparse
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -305,13 +307,122 @@ def print_buy_and_hold_benchmark(df: pd.DataFrame) -> BacktestResult:
     return result
 
 
+def _result_to_dict(r: BacktestResult) -> dict:
+    """Convert a BacktestResult to a JSON-serializable dict."""
+    return {
+        "strategy": r.strategy_name,
+        "params": r.params,
+        "trades": r.total_trades,
+        "win_rate_pct": round(r.win_rate_pct, 2),
+        "cagr_pct": round(r.cagr_pct, 2),
+        "total_return_pct": round(r.total_return_pct, 2),
+        "sharpe": round(r.sharpe_ratio, 3),
+        "sortino": round(r.sortino_ratio, 3),
+        "calmar": round(r.calmar_ratio, 3),
+        "max_drawdown_pct": round(r.max_drawdown_pct, 2),
+        "profit_factor": round(r.profit_factor, 3),
+        "expectancy_pct": round(r.expectancy_pct, 4),
+        "exposure_pct": round(r.exposure_pct, 2),
+        "annual_trades": round(r.annual_trades, 1),
+        "avg_win_pct": round(r.avg_win_pct, 4),
+        "avg_loss_pct": round(r.avg_loss_pct, 4),
+        "best_trade_pct": round(r.best_trade_pct, 4),
+        "worst_trade_pct": round(r.worst_trade_pct, 4),
+        "max_consecutive_wins": r.max_consecutive_wins,
+        "max_consecutive_losses": r.max_consecutive_losses,
+    }
+
+
+def save_results_json(
+    results: list[BacktestResult],
+    bh_result: BacktestResult,
+    best: BacktestResult,
+    optimized: list[BacktestResult] = None,
+) -> str:
+    """Save all backtest results to a JSON file for machine-readable analysis."""
+    active = [r for r in results if r.total_trades > 0]
+    ranked = sorted(active, key=lambda r: r.sharpe_ratio, reverse=True)
+
+    data = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "ranking": [_result_to_dict(r) for r in ranked],
+        "benchmark": _result_to_dict(bh_result),
+        "best_by_category": {
+            "sharpe": _result_to_dict(max(active, key=lambda r: r.sharpe_ratio)),
+            "win_rate": _result_to_dict(max(active, key=lambda r: r.win_rate_pct)),
+            "total_return": _result_to_dict(max(active, key=lambda r: r.total_return_pct)),
+            "calmar": _result_to_dict(max(active, key=lambda r: r.calmar_ratio)),
+        },
+        "recommendation": {
+            **_result_to_dict(best),
+            "alpha_vs_bh_cagr": round(best.cagr_pct - bh_result.cagr_pct, 2),
+        },
+    }
+
+    if optimized:
+        data["optimized"] = [_result_to_dict(r) for r in optimized if r.total_trades > 0]
+
+    filepath = OUTPUT_DIR / "results.json"
+    filepath.write_text(json.dumps(data, indent=2))
+    return str(filepath)
+
+
+def print_results_summary() -> str:
+    """Print a concise summary of the last saved backtest results."""
+    filepath = OUTPUT_DIR / "results.json"
+    if not filepath.exists():
+        return "No results found. Run a backtest first: ./go.sh backtest"
+
+    data = json.loads(filepath.read_text())
+
+    lines = []
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("  BACKTEST RESULTS SUMMARY")
+    lines.append(f"  Generated: {data['generated_at']}")
+    lines.append("=" * 60)
+
+    # Ranking table
+    lines.append("")
+    lines.append("  STRATEGY RANKING (by Sharpe ratio)")
+    lines.append(f"  {'#':<3} {'Strategy':<28} {'Sharpe':>7} {'CAGR%':>7} {'Win%':>6} {'MaxDD%':>7} {'PF':>6}")
+    lines.append("  " + "-" * 64)
+    for i, r in enumerate(data["ranking"], 1):
+        lines.append(
+            f"  {i:<3} {r['strategy']:<28} {r['sharpe']:>7.2f} {r['cagr_pct']:>7.1f} "
+            f"{r['win_rate_pct']:>5.1f} {r['max_drawdown_pct']:>7.1f} {r['profit_factor']:>6.2f}"
+        )
+
+    # Benchmark
+    bh = data["benchmark"]
+    lines.append("")
+    lines.append(f"  BENCHMARK: SPY Buy & Hold  Sharpe={bh['sharpe']:.2f}  CAGR={bh['cagr_pct']:.1f}%  MaxDD={bh['max_drawdown_pct']:.1f}%")
+
+    # Recommendation
+    rec = data["recommendation"]
+    lines.append("")
+    lines.append("  RECOMMENDED STRATEGY")
+    lines.append(f"    {rec['strategy']}")
+    lines.append(f"    Sharpe={rec['sharpe']:.2f}  CAGR={rec['cagr_pct']:.1f}%  Win%={rec['win_rate_pct']:.1f}  Alpha={rec['alpha_vs_bh_cagr']:+.1f}%")
+    lines.append("=" * 60)
+
+    output = "\n".join(lines)
+    print(output)
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description="SPY Daytrading Backtest")
     parser.add_argument("--years", type=int, default=5, help="Years of data")
     parser.add_argument("--capital", type=float, default=100_000, help="Starting capital")
     parser.add_argument("--optimize", action="store_true", help="Run parameter optimization")
     parser.add_argument("--no-cache", action="store_true", help="Force fresh data download")
+    parser.add_argument("--results", action="store_true", help="Show last backtest results summary")
     args = parser.parse_args()
+
+    if args.results:
+        print_results_summary()
+        return
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -414,6 +525,10 @@ def main():
     wf_results = run_walk_forward(df, get_all_strategies()[0], engine, n_splits=5)
     if wf_results:
         print(format_results_table(wf_results))
+
+    # --- Save machine-readable results ---
+    json_path = save_results_json(results, bh_result, best, optimized or None)
+    print(f"  Results JSON: {json_path}")
 
     # --- Summary ---
     print("\n" + "=" * 60)

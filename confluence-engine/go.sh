@@ -26,6 +26,9 @@ case "$MODE" in
     optimize|opt)
         PYTHONPATH=. python3 -m backtest.run --years "${2:-5}" --optimize
         ;;
+    results|summary|last)
+        PYTHONPATH=. python3 -m backtest.run --results
+        ;;
     *)
         echo ""
         echo "  Usage:"
@@ -33,6 +36,7 @@ case "$MODE" in
         echo "    ./go.sh backtest     Full 5-year backtest"
         echo "    ./go.sh backtest 3   3-year backtest"
         echo "    ./go.sh optimize     Backtest + parameter optimization"
+        echo "    ./go.sh results      Show last backtest results summary"
         echo ""
         ;;
 esac
