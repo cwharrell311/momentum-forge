@@ -1,0 +1,135 @@
+name: Paper Trading
+
+# Run the autonomous trader against Alpaca paper account.
+# Discovers strategies, then executes one trading cycle.
+# Requires ALPACA_KEY and ALPACA_SECRET repository secrets.
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to run"
+        required: false
+        default: "cycle"
+        type: choice
+        options:
+          - "cycle"       # Run one trading cycle (signal → execute)
+          - "discover"    # Find new strategies (no trading)
+          - "status"      # Show current portfolio state
+      instruments:
+        description: "Override instruments (space-separated, blank = full universe)"
+        required: false
+        default: ""
+        type: string
+
+  # Run trading cycle every weekday at market open + every 30 min during market hours
+  # 9:30 AM ET = 14:30 UTC, market closes 4:00 PM ET = 21:00 UTC
+  schedule:
+    - cron: "30 14 * * 1-5"   # Market open
+    - cron: "0 15-20 * * 1-5"  # Every hour during market hours
+    - cron: "30 15-20 * * 1-5" # Every :30 during market hours
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: 1
+  PYTHONDONTWRITEBYTECODE: 1
+
+jobs:
+  trade:
+    name: "Paper Trade Cycle"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: confluence-engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: confluence-engine/requirements-backtest.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-backtest.txt alpaca-py>=0.33.0
+
+      - name: Download previous state
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: trading-state
+          path: confluence-engine
+          if_no_artifact_found: warn
+          workflow_conclusion: ""
+          search_artifacts: true
+        continue-on-error: true
+
+      - name: Run trading command
+        run: |
+          COMMAND="${{ inputs.command || 'cycle' }}"
+
+          echo "════════════════════════════════════════"
+          echo "  MOMENTUM FORGE — PAPER TRADING"
+          echo "  Command: $COMMAND"
+          echo "  Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "════════════════════════════════════════"
+
+          if [ "$COMMAND" = "discover" ]; then
+            INSTRUMENTS="${{ inputs.instruments || '' }}"
+            ARGS="discover"
+            if [ -n "$INSTRUMENTS" ]; then
+              ARGS="$ARGS --instruments $INSTRUMENTS"
+            fi
+            python -m src.services.autonomous_trader $ARGS 2>&1 | tee trade-output.log
+          elif [ "$COMMAND" = "status" ]; then
+            python -m src.services.autonomous_trader status 2>&1 | tee trade-output.log
+          else
+            # Default: run one trading cycle
+            # First discover if no state exists
+            if [ ! -f autonomous_state.json ]; then
+              echo "No state file — running initial discovery first..."
+              python -m src.services.autonomous_trader discover 2>&1 | tee trade-output.log
+            fi
+            python -m src.services.autonomous_trader cycle 2>&1 | tee -a trade-output.log
+          fi
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          ALPACA_PAPER: "true"
+
+      - name: Post results to summary
+        if: always()
+        run: |
+          echo "## Paper Trading Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Command:** ${{ inputs.command || 'cycle' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -60 trade-output.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ -f autonomous_state.json ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Portfolio State" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            python3 -c "
+          import json
+          state = json.load(open('autonomous_state.json'))
+          summary = {k: v for k, v in state.items() if k != 'strategies'}
+          print(json.dumps(summary, indent=2))
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "{}" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload trading state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-state
+          path: |
+            confluence-engine/autonomous_state.json
+            confluence-engine/trade-output.log
+          retention-days: 90
+          overwrite: true

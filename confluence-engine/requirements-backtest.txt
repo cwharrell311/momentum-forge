@@ -10,6 +10,9 @@ scipy>=1.11.0
 # ccxt for crypto exchange data (Binance etc.)
 ccxt>=4.0.0
 
+# Alpaca broker (paper + live trading)
+alpaca-py>=0.33.0
+
 # AI evaluation (optional — only used with --ai-eval flag)
 anthropic>=0.43.0
 openai>=1.58.1

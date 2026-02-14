@@ -992,17 +992,26 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Connect to Alpaca if credentials are available
+    alpaca_client = None
+    try:
+        from src.services.alpaca_client import AlpacaClient
+        alpaca_client = AlpacaClient.from_env()
+        log.info("Alpaca connected (%s mode)", "PAPER" if alpaca_client.paper else "LIVE")
+    except (ValueError, ImportError):
+        log.info("No Alpaca credentials — running in backtest-only mode")
+
     if args.command == "discover":
         result = asyncio.run(run_discovery_cli(args.instruments, args.deploy, args.save))
         print(json.dumps(result, indent=2, default=str))
     elif args.command == "status":
-        trader = AutonomousTrader()
+        trader = AutonomousTrader(alpaca_client=alpaca_client)
         if trader.load_state():
             print(json.dumps(trader.portfolio.to_dict(), indent=2, default=str))
         else:
             print("No state file found. Run 'discover' first.")
     elif args.command == "cycle":
-        trader = AutonomousTrader()
+        trader = AutonomousTrader(alpaca_client=alpaca_client)
         trader.load_state()
         result = asyncio.run(trader.run_cycle())
         print(json.dumps(result, indent=2, default=str))

@@ -103,7 +103,23 @@ class AutonomousScheduler:
         log.info("  State file: %s", self.state_file)
         log.info("=" * 60)
 
-        self._trader = AutonomousTrader(paper_mode=True)
+        # Connect to Alpaca if credentials are available
+        alpaca_client = None
+        try:
+            from src.services.alpaca_client import AlpacaClient
+            alpaca_client = AlpacaClient.from_env()
+            account = await alpaca_client.get_account()
+            log.info(
+                "Alpaca connected: equity=$%s, cash=$%s (%s)",
+                account["equity"], account["cash"],
+                "PAPER" if alpaca_client.paper else "LIVE",
+            )
+        except ValueError:
+            log.warning("No Alpaca credentials — running in backtest-only mode")
+        except Exception as e:
+            log.warning("Alpaca connection failed: %s — running in backtest-only mode", e)
+
+        self._trader = AutonomousTrader(paper_mode=True, alpaca_client=alpaca_client)
 
         # Load existing state
         if self._trader.load_state(self.state_file):
