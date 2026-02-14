@@ -146,6 +146,9 @@
             <button onclick="switchTab('ai')" id="tab-ai" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition" style="color: #a78bfa;">
                 AI Command Center
             </button>
+            <button onclick="switchTab('engine')" id="tab-engine" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition" style="color: #f59e0b;">
+                Trading Engine
+            </button>
         </div>
 
         <!-- Loading State -->
@@ -798,6 +801,138 @@
                 </div>
             </div>
         </div>
+
+        <!-- ═══ TRADING ENGINE TAB ═══ -->
+        <div id="panel-engine" class="hidden">
+            <div class="flex items-center gap-3 mb-5">
+                <h2 class="text-lg font-semibold text-white">Trading Engine</h2>
+                <span class="text-[10px] font-mono text-amber-400 border border-amber-600/40 px-2 py-0.5 rounded">AI-OPTIMIZED</span>
+                <div id="engine-status-badge" class="ml-auto text-xs font-semibold px-3 py-1 rounded" style="background: #1e293b; color: #64748b;">INACTIVE</div>
+            </div>
+
+            <!-- Engine Controls -->
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                    <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Tickers</div>
+                    <input id="engine-tickers" type="text" value="SPY, QQQ" placeholder="SPY, QQQ, AAPL"
+                        class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono uppercase mb-3">
+                    <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Lookback Days</div>
+                    <input id="engine-lookback" type="number" value="252" min="60" max="504"
+                        class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono mb-3">
+                    <button onclick="runEngineBacktest()" id="engine-backtest-btn"
+                        class="w-full px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors bg-slate-700 hover:bg-slate-600 text-white">
+                        Run Backtest
+                    </button>
+                </div>
+
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                    <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-2">AI Optimization</div>
+                    <p class="text-xs text-slate-400 mb-3">Backtest all strategies, then let the AI pick the best one. No opinions — pure data.</p>
+                    <button onclick="runEngineOptimize()" id="engine-optimize-btn"
+                        class="w-full px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors text-white mb-3"
+                        style="background: linear-gradient(135deg, #d97706, #f59e0b);">
+                        Optimize with AI
+                    </button>
+                    <div id="engine-ai-recommendation" class="text-xs text-slate-500 mt-2"></div>
+                </div>
+
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                    <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Engine Control</div>
+                    <div class="space-y-2 mb-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-slate-400">Strategy</span>
+                            <span id="engine-selected-strategy" class="text-xs text-white font-mono">—</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-slate-400">Ticker</span>
+                            <span id="engine-selected-ticker" class="text-xs text-white font-mono">—</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-slate-400">Last Backtest</span>
+                            <span id="engine-last-backtest" class="text-xs text-slate-500 font-mono">—</span>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="activateEngine()" id="engine-activate-btn"
+                            class="px-3 py-2 rounded-lg font-semibold text-xs transition-colors bg-emerald-700 hover:bg-emerald-600 text-white">
+                            Activate
+                        </button>
+                        <button onclick="deactivateEngine()" id="engine-deactivate-btn"
+                            class="px-3 py-2 rounded-lg font-semibold text-xs transition-colors bg-slate-700 hover:bg-slate-600 text-white">
+                            Stop
+                        </button>
+                    </div>
+                    <button onclick="checkEngineSignal()" id="engine-signal-btn"
+                        class="w-full mt-2 px-3 py-2 rounded-lg font-semibold text-xs transition-colors bg-slate-700 hover:bg-slate-600 text-amber-400 border border-amber-700/40">
+                        Check Signal Now
+                    </button>
+                </div>
+            </div>
+
+            <!-- Current Signal -->
+            <div id="engine-signal-display" class="hidden mb-6">
+                <div class="bg-slate-800 rounded-xl border border-amber-600/40 p-5">
+                    <div class="flex items-center gap-3 mb-3">
+                        <span class="text-xs font-bold uppercase px-2 py-0.5 rounded" style="background: #78350f; color: #fcd34d;">SIGNAL</span>
+                        <span id="engine-signal-ticker" class="text-white font-bold"></span>
+                        <span id="engine-signal-side" class="text-xs font-bold uppercase px-2 py-0.5 rounded"></span>
+                    </div>
+                    <div class="grid grid-cols-4 gap-4 text-sm">
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Price</div>
+                            <div id="engine-signal-price" class="text-white font-mono">—</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Confidence</div>
+                            <div id="engine-signal-confidence" class="text-amber-400 font-mono">—</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Strategy</div>
+                            <div id="engine-signal-strategy" class="text-white font-mono">—</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Time</div>
+                            <div id="engine-signal-time" class="text-slate-400 font-mono">—</div>
+                        </div>
+                    </div>
+                    <div id="engine-signal-reason" class="text-xs text-slate-400 mt-3 border-t border-slate-700 pt-3"></div>
+                </div>
+            </div>
+
+            <!-- Backtest Results Table -->
+            <div id="engine-results-section" class="hidden">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide">Backtest Results</h3>
+                    <span id="engine-results-count" class="text-xs text-slate-500 font-mono"></span>
+                </div>
+                <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-700 text-[10px] text-slate-500 uppercase tracking-wider">
+                                <th class="px-4 py-3 text-left">#</th>
+                                <th class="px-4 py-3 text-left">Strategy</th>
+                                <th class="px-4 py-3 text-left">Ticker</th>
+                                <th class="px-4 py-3 text-right">Return</th>
+                                <th class="px-4 py-3 text-right">Win Rate</th>
+                                <th class="px-4 py-3 text-right">Sharpe</th>
+                                <th class="px-4 py-3 text-right">Profit Factor</th>
+                                <th class="px-4 py-3 text-right">Max DD</th>
+                                <th class="px-4 py-3 text-right">Trades</th>
+                            </tr>
+                        </thead>
+                        <tbody id="engine-results-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Strategy Library -->
+            <div class="mt-6">
+                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide mb-3">Strategy Library</h3>
+                <div id="engine-strategies-list" class="grid grid-cols-2 gap-3">
+                    <div class="text-xs text-slate-500">Loading strategies...</div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- ═══ TRADE ENTRY MODAL ═══ -->
@@ -1017,16 +1152,21 @@
         // ═══════════════════════════════════════════════════════
 
         function switchTab(tab) {
-            ['screener', 'journal', 'performance', 'broker', 'system', 'ai'].forEach(t => {
+            ['screener', 'journal', 'performance', 'broker', 'system', 'ai', 'engine'].forEach(t => {
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
                 const btn = document.getElementById(`tab-${t}`);
                 if (t === 'ai') {
-                    // AI tab has special purple styling
                     btn.className = t === tab
                         ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
                         : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
                     if (t === tab) btn.style.color = '#a78bfa';
                     else btn.style.color = '#a78bfa';
+                } else if (t === 'engine') {
+                    btn.className = t === tab
+                        ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
+                        : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
+                    if (t === tab) btn.style.color = '#f59e0b';
+                    else btn.style.color = '#f59e0b';
                 } else {
                     btn.className = t === tab
                         ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
@@ -1040,6 +1180,7 @@
             if (tab === 'broker') loadBrokerData();
             if (tab === 'system') loadSystemStatus();
             if (tab === 'ai') loadAIStatus();
+            if (tab === 'engine') loadEngineStatus();
         }
 
         // ═══════════════════════════════════════════════════════
@@ -2650,6 +2791,243 @@
                 sendAIPrompt();
             }
         });
+
+        // ═══════════════════════════════════════════════════════
+        // TRADING ENGINE
+        // ═══════════════════════════════════════════════════════
+
+        async function loadEngineStatus() {
+            try {
+                const [statusResp, strategiesResp] = await Promise.all([
+                    fetch(`${API}/api/v1/engine/status`),
+                    fetch(`${API}/api/v1/engine/strategies`),
+                ]);
+                if (statusResp.ok) {
+                    const status = await statusResp.json();
+                    updateEngineUI(status);
+                }
+                if (strategiesResp.ok) {
+                    const data = await strategiesResp.json();
+                    renderStrategyLibrary(data.strategies);
+                }
+            } catch (e) {
+                console.error('Engine status load failed:', e);
+            }
+        }
+
+        function updateEngineUI(status) {
+            const badge = document.getElementById('engine-status-badge');
+            if (status.active) {
+                badge.textContent = 'ACTIVE';
+                badge.style.background = '#064e3b';
+                badge.style.color = '#6ee7b7';
+            } else {
+                badge.textContent = 'INACTIVE';
+                badge.style.background = '#1e293b';
+                badge.style.color = '#64748b';
+            }
+
+            document.getElementById('engine-selected-strategy').textContent = status.selected_strategy || '—';
+            document.getElementById('engine-selected-ticker').textContent = status.selected_ticker || '—';
+            document.getElementById('engine-last-backtest').textContent = status.last_backtest_at
+                ? new Date(status.last_backtest_at).toLocaleString() : '—';
+
+            if (status.ai_recommendation) {
+                document.getElementById('engine-ai-recommendation').textContent = status.ai_recommendation;
+            }
+
+            if (status.top_results && status.top_results.length > 0) {
+                renderEngineResults(status.top_results);
+            }
+
+            if (status.last_signal) {
+                showEngineSignal(status.last_signal);
+            }
+        }
+
+        function renderStrategyLibrary(strategies) {
+            const container = document.getElementById('engine-strategies-list');
+            if (!strategies || strategies.length === 0) {
+                container.innerHTML = '<div class="text-xs text-slate-500">No strategies loaded</div>';
+                return;
+            }
+            container.innerHTML = strategies.map(s => `
+                <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
+                    <div class="text-sm font-semibold text-white mb-1">${s.name}</div>
+                    <div class="text-xs text-slate-400 mb-2">${s.description}</div>
+                    <div class="text-[10px] text-slate-500 font-mono">${JSON.stringify(s.params)}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderEngineResults(results) {
+            const section = document.getElementById('engine-results-section');
+            const tbody = document.getElementById('engine-results-body');
+            const countEl = document.getElementById('engine-results-count');
+
+            section.classList.remove('hidden');
+            countEl.textContent = `${results.length} combinations`;
+
+            tbody.innerHTML = results.map((r, i) => {
+                const retClass = r.total_return.startsWith('+') ? 'change-up' : r.total_return.startsWith('-') ? 'change-down' : '';
+                const sharpeVal = parseFloat(r.sharpe);
+                const sharpeClass = sharpeVal >= 1.5 ? 'text-emerald-400' : sharpeVal >= 1.0 ? 'text-amber-400' : 'text-slate-400';
+                return `
+                    <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition">
+                        <td class="px-4 py-2.5 text-slate-500 font-mono">${i + 1}</td>
+                        <td class="px-4 py-2.5 text-white font-mono text-xs">${r.strategy}</td>
+                        <td class="px-4 py-2.5 text-amber-400 font-bold">${r.ticker}</td>
+                        <td class="px-4 py-2.5 text-right font-mono ${retClass}">${r.total_return}</td>
+                        <td class="px-4 py-2.5 text-right font-mono text-white">${r.win_rate}</td>
+                        <td class="px-4 py-2.5 text-right font-mono ${sharpeClass}">${r.sharpe}</td>
+                        <td class="px-4 py-2.5 text-right font-mono text-white">${r.profit_factor}</td>
+                        <td class="px-4 py-2.5 text-right font-mono text-red-400">${r.max_drawdown}</td>
+                        <td class="px-4 py-2.5 text-right font-mono text-slate-400">${r.trades}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function showEngineSignal(signal) {
+            const display = document.getElementById('engine-signal-display');
+            display.classList.remove('hidden');
+
+            document.getElementById('engine-signal-ticker').textContent = signal.ticker;
+            const sideEl = document.getElementById('engine-signal-side');
+            sideEl.textContent = signal.side;
+            if (signal.side === 'long') {
+                sideEl.style.background = '#065f46';
+                sideEl.style.color = '#6ee7b7';
+            } else {
+                sideEl.style.background = '#7f1d1d';
+                sideEl.style.color = '#fca5a5';
+            }
+            document.getElementById('engine-signal-price').textContent = `$${Number(signal.price).toFixed(2)}`;
+            document.getElementById('engine-signal-confidence').textContent = `${(signal.confidence * 100).toFixed(0)}%`;
+            document.getElementById('engine-signal-strategy').textContent = signal.strategy;
+            document.getElementById('engine-signal-time').textContent = signal.timestamp ? new Date(signal.timestamp).toLocaleDateString() : '—';
+            document.getElementById('engine-signal-reason').textContent = signal.reason;
+        }
+
+        async function runEngineBacktest() {
+            const btn = document.getElementById('engine-backtest-btn');
+            const tickers = document.getElementById('engine-tickers').value.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+            const lookback = parseInt(document.getElementById('engine-lookback').value) || 252;
+
+            btn.textContent = 'Running...';
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+
+            try {
+                const resp = await fetch(`${API}/api/v1/engine/backtest`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tickers, lookback_days: lookback}),
+                });
+                const data = await resp.json();
+                if (resp.ok && data.results) {
+                    renderEngineResults(data.results);
+                } else {
+                    alert(data.detail || 'Backtest failed');
+                }
+            } catch (e) {
+                alert('Backtest request failed: ' + e.message);
+            } finally {
+                btn.textContent = 'Run Backtest';
+                btn.disabled = false;
+                btn.style.opacity = '1';
+            }
+        }
+
+        async function runEngineOptimize() {
+            const btn = document.getElementById('engine-optimize-btn');
+            const tickers = document.getElementById('engine-tickers').value.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+
+            btn.textContent = 'Optimizing...';
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+
+            try {
+                const resp = await fetch(`${API}/api/v1/engine/optimize`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tickers}),
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    document.getElementById('engine-ai-recommendation').innerHTML = `
+                        <div class="text-amber-400 font-semibold mb-1">${data.message}</div>
+                        <div class="text-slate-500">${data.recommendation?.reasoning || ''}</div>
+                    `;
+                    // Refresh status to show updated state
+                    loadEngineStatus();
+                } else {
+                    alert(data.detail || 'Optimization failed');
+                }
+            } catch (e) {
+                alert('Optimization request failed: ' + e.message);
+            } finally {
+                btn.textContent = 'Optimize with AI';
+                btn.disabled = false;
+                btn.style.opacity = '1';
+            }
+        }
+
+        async function activateEngine() {
+            try {
+                const resp = await fetch(`${API}/api/v1/engine/activate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({}),
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    loadEngineStatus();
+                } else {
+                    alert(data.detail || 'Activation failed');
+                }
+            } catch (e) {
+                alert('Failed to activate engine: ' + e.message);
+            }
+        }
+
+        async function deactivateEngine() {
+            try {
+                const resp = await fetch(`${API}/api/v1/engine/deactivate`, {method: 'POST'});
+                if (resp.ok) {
+                    loadEngineStatus();
+                    document.getElementById('engine-signal-display').classList.add('hidden');
+                }
+            } catch (e) {
+                alert('Failed to deactivate engine: ' + e.message);
+            }
+        }
+
+        async function checkEngineSignal() {
+            const btn = document.getElementById('engine-signal-btn');
+            btn.textContent = 'Checking...';
+            btn.disabled = true;
+
+            try {
+                const resp = await fetch(`${API}/api/v1/engine/signal`, {method: 'POST'});
+                const data = await resp.json();
+                if (resp.ok) {
+                    if (data.has_signal) {
+                        showEngineSignal(data.signal);
+                    } else {
+                        document.getElementById('engine-signal-display').classList.add('hidden');
+                        alert(data.message || 'No signal at this time');
+                    }
+                } else {
+                    alert(data.detail || 'Signal check failed');
+                }
+            } catch (e) {
+                alert('Signal check failed: ' + e.message);
+            } finally {
+                btn.textContent = 'Check Signal Now';
+                btn.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>

@@ -241,3 +241,35 @@ class SignalHistory(Base):
         Index("idx_sighist_graded", "graded_at"),
         Index("idx_sighist_conviction", "conviction_pct", "signal_date"),
     )
+
+
+class BacktestRecord(Base):
+    """
+    Trading Engine backtest results.
+
+    Stores the output of each strategy+ticker backtest run so you can
+    track how strategy performance evolves over time and compare
+    historical optimization recommendations.
+    """
+
+    __tablename__ = "backtest_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(10), nullable=False)
+    total_return_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    win_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    max_drawdown_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    sharpe_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    profit_factor: Mapped[float] = mapped_column(Float, nullable=False)
+    total_trades: Mapped[int] = mapped_column(Integer, nullable=False)
+    avg_trade_pnl_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    bars_tested: Mapped[int] = mapped_column(Integer, nullable=False)
+    ai_selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_backtest_strategy", "strategy_name", "ticker", "created_at"),
+        Index("idx_backtest_sharpe", "sharpe_ratio", "created_at"),
+    )

@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from src.api.dependencies import cleanup_app, init_ai, init_app
-from src.api.routes import broker, command_center, confluence, performance, regime, signals, system, trades, watchlist
+from src.api.routes import broker, command_center, confluence, performance, regime, signals, system, trades, trading_engine, watchlist
 from src.config import get_settings
 from src.services.scheduler import start_scheduler, stop_scheduler
 
@@ -149,6 +149,7 @@ app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
 app.include_router(broker.router, prefix="/api/v1/broker", tags=["broker"])
 app.include_router(performance.router, prefix="/api/v1/performance", tags=["performance"])
 app.include_router(command_center.router, prefix="/api/v1/ai", tags=["ai-command-center"])
+app.include_router(trading_engine.router, prefix="/api/v1/engine", tags=["trading-engine"])
 
 
 # ── Dashboard ──

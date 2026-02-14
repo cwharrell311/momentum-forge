@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     ai_claude_model: str = "claude-sonnet-4-20250514"
     ai_openai_model: str = "gpt-4o"
 
+    # ── Trading Engine ──
+    engine_tickers: str = "SPY,QQQ"        # Default tickers for backtesting (comma-separated)
+    engine_lookback_days: int = 252        # Days of history for backtesting
+
     # ── Auto-Trading ──
     auto_trade_enabled: bool = False       # Master switch — set true to enable
     auto_trade_min_conviction: int = 60    # Min conviction % to trigger a trade
