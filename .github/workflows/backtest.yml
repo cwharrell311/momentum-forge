@@ -116,14 +116,14 @@ jobs:
             echo "| Strategy | Symbol | Sharpe | CAGR | Max DD | Win Rate | Trades |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|--------|--------|------|--------|----------|--------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-import json
-data = json.load(open('results-stocks.json'))
-results = sorted(data.get('results', []),
-    key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
-    reverse=True)
-for r in results[:10]:
-    print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
-PYEOF
+          import json
+          data = json.load(open('results-stocks.json'))
+          results = sorted(data.get('results', []),
+              key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
+              reverse=True)
+          for r in results[:10]:
+              print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          PYEOF
           fi
 
       - name: Upload stock results
@@ -191,14 +191,14 @@ PYEOF
             echo "| Strategy | Symbol | Sharpe | CAGR | Max DD | Win Rate | Trades |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|--------|--------|------|--------|----------|--------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-import json
-data = json.load(open('results-crypto.json'))
-results = sorted(data.get('results', []),
-    key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
-    reverse=True)
-for r in results[:10]:
-    print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
-PYEOF
+          import json
+          data = json.load(open('results-crypto.json'))
+          results = sorted(data.get('results', []),
+              key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
+              reverse=True)
+          for r in results[:10]:
+              print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          PYEOF
           fi
 
       - name: Upload crypto results
@@ -302,11 +302,11 @@ PYEOF
             echo "| Rank | Strategy | Symbol | Asset | Sharpe | CAGR | Max DD |" >> $GITHUB_STEP_SUMMARY
             echo "|------|----------|--------|-------|--------|------|--------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-import json
-data = json.load(open('combined-report.json'))
-for i, r in enumerate(data.get('top_5', []), 1):
-    print(f"| {i} | {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('asset_class','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} |")
-PYEOF
+          import json
+          data = json.load(open('combined-report.json'))
+          for i, r in enumerate(data.get('top_5', []), 1):
+              print(f"| {i} | {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('asset_class','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} |")
+          PYEOF
           else
             echo "No results files found." >> $GITHUB_STEP_SUMMARY
           fi

@@ -160,25 +160,25 @@ jobs:
             echo "| Strategy | Instruments | Sharpe | CAGR | Max DD | WF Efficiency |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------------|--------|------|--------|---------------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-import json
-data = json.load(open('discovery-results.json'))
-for s in data.get('strategies', []):
-    exp = s.get('expected', {})
-    instr = ', '.join(s.get('instruments', []))
-    print(f"| {s.get('strategy_name','?')} | {instr} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('max_dd_pct',0):.1f}% | {exp.get('wf_efficiency',0):.2f} |")
-PYEOF
+          import json
+          data = json.load(open('discovery-results.json'))
+          for s in data.get('strategies', []):
+              exp = s.get('expected', {})
+              instr = ', '.join(s.get('instruments', []))
+              print(f"| {s.get('strategy_name','?')} | {instr} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('max_dd_pct',0):.1f}% | {exp.get('wf_efficiency',0):.2f} |")
+          PYEOF
 
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### All Candidates (Top 20)" >> $GITHUB_STEP_SUMMARY
             echo "| # | Strategy | Sharpe | CAGR | WF Eff | Win Rate |" >> $GITHUB_STEP_SUMMARY
             echo "|---|----------|--------|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-import json
-data = json.load(open('discovery-results.json'))
-for i, s in enumerate(data.get('all_candidates', [])[:20], 1):
-    exp = s.get('expected', {})
-    print(f"| {i} | {s.get('strategy_name','?')} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('wf_efficiency',0):.2f} | {exp.get('win_rate',0):.0f}% |")
-PYEOF
+          import json
+          data = json.load(open('discovery-results.json'))
+          for i, s in enumerate(data.get('all_candidates', [])[:20], 1):
+              exp = s.get('expected', {})
+              print(f"| {i} | {s.get('strategy_name','?')} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('wf_efficiency',0):.2f} | {exp.get('win_rate',0):.0f}% |")
+          PYEOF
           else
             echo "No results file found." >> $GITHUB_STEP_SUMMARY
           fi
