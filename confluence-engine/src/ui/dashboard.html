@@ -143,6 +143,9 @@
             <button onclick="switchTab('system')" id="tab-system" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition">
                 System
             </button>
+            <button onclick="switchTab('ai')" id="tab-ai" class="tab-inactive pb-3 border-b-2 text-sm font-semibold transition" style="color: #a78bfa;">
+                AI Command Center
+            </button>
         </div>
 
         <!-- Loading State -->
@@ -647,6 +650,154 @@
                 </div>
             </div>
         </div>
+
+        <!-- ═══ AI COMMAND CENTER ═══ -->
+        <div id="panel-ai" class="hidden">
+            <div class="flex items-center gap-3 mb-5">
+                <h2 class="text-lg font-semibold text-white">AI Command Center</h2>
+                <span class="text-[10px] font-mono text-purple-400 border border-purple-600/40 px-2 py-0.5 rounded">DUAL-PROVIDER ROUTING</span>
+            </div>
+
+            <!-- Provider Status Cards -->
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div id="ai-claude-card" class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="w-2 h-2 rounded-full bg-slate-600" id="ai-claude-dot"></div>
+                            <span class="text-sm font-bold text-white">Claude</span>
+                        </div>
+                        <span id="ai-claude-model" class="text-[10px] text-slate-500 font-mono">—</span>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3 text-center">
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Calls</div>
+                            <div id="ai-claude-calls" class="text-lg font-bold text-white">0</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                            <div id="ai-claude-tokens" class="text-lg font-bold text-white">0</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Errors</div>
+                            <div id="ai-claude-errors" class="text-lg font-bold text-white">0</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="ai-openai-card" class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="w-2 h-2 rounded-full bg-slate-600" id="ai-openai-dot"></div>
+                            <span class="text-sm font-bold text-white">OpenAI</span>
+                        </div>
+                        <span id="ai-openai-model" class="text-[10px] text-slate-500 font-mono">—</span>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3 text-center">
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Calls</div>
+                            <div id="ai-openai-calls" class="text-lg font-bold text-white">0</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                            <div id="ai-openai-tokens" class="text-lg font-bold text-white">0</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">Errors</div>
+                            <div id="ai-openai-errors" class="text-lg font-bold text-white">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Prompt Input -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                <div class="flex items-center gap-4 mb-4">
+                    <select id="ai-mode" class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white">
+                        <option value="auto">Auto-Route</option>
+                        <option value="claude">Force Claude</option>
+                        <option value="openai">Force OpenAI</option>
+                        <option value="dual">Dual (Both)</option>
+                    </select>
+                    <input id="ai-ticker" type="text" placeholder="Ticker (optional)" maxlength="6"
+                        class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono uppercase w-28">
+                </div>
+                <div class="flex gap-3">
+                    <textarea id="ai-prompt" rows="3" placeholder="Ask anything — analyze setups, build trade theses, calculate risk/reward, generate code..."
+                        class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-sm text-white placeholder-slate-500 resize-none"></textarea>
+                    <button onclick="sendAIPrompt()" id="ai-send-btn"
+                        class="self-end px-6 py-3 rounded-lg font-semibold text-sm transition-colors"
+                        style="background: linear-gradient(135deg, #7c3aed, #6366f1); color: white;">
+                        Send
+                    </button>
+                </div>
+                <div class="flex items-center gap-4 mt-3">
+                    <div id="ai-routing-info" class="text-[10px] text-slate-500 font-mono"></div>
+                </div>
+            </div>
+
+            <!-- Response Area -->
+            <div id="ai-response-area" class="hidden">
+                <!-- Single response -->
+                <div id="ai-single-response" class="hidden">
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2">
+                                <span id="ai-resp-provider" class="text-xs font-bold uppercase px-2 py-0.5 rounded" style="background: #4c1d95; color: #c4b5fd;">—</span>
+                                <span id="ai-resp-category" class="text-[10px] text-slate-500 font-mono">—</span>
+                            </div>
+                            <div class="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
+                                <span id="ai-resp-tokens">—</span>
+                                <span id="ai-resp-latency">—</span>
+                            </div>
+                        </div>
+                        <div id="ai-resp-content" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
+                        <div id="ai-resp-error" class="text-sm text-red-400 mt-2 hidden"></div>
+                    </div>
+                </div>
+
+                <!-- Dual response -->
+                <div id="ai-dual-response" class="hidden grid grid-cols-2 gap-4 mb-6">
+                    <div class="bg-slate-800 rounded-xl border border-purple-700/30 p-5">
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="text-xs font-bold uppercase px-2 py-0.5 rounded" style="background: #4c1d95; color: #c4b5fd;">Claude</span>
+                            <span id="ai-dual-claude-meta" class="text-[10px] text-slate-500 font-mono"></span>
+                        </div>
+                        <div id="ai-dual-claude-content" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
+                    </div>
+                    <div class="bg-slate-800 rounded-xl border border-green-700/30 p-5">
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="text-xs font-bold uppercase px-2 py-0.5 rounded" style="background: #064e3b; color: #6ee7b7;">OpenAI</span>
+                            <span id="ai-dual-openai-meta" class="text-[10px] text-slate-500 font-mono"></span>
+                        </div>
+                        <div id="ai-dual-openai-content" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Routing Categories Reference -->
+            <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5">
+                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wide mb-3">Routing Guide</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <div class="text-xs font-semibold text-purple-400 mb-2">Claude (Reasoning)</div>
+                        <ul class="text-xs text-slate-500 space-y-1">
+                            <li>Trade thesis &amp; bull/bear cases</li>
+                            <li>Signal analysis &amp; explanations</li>
+                            <li>Risk assessment &amp; position sizing</li>
+                            <li>Daily summaries &amp; recaps</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <div class="text-xs font-semibold text-green-400 mb-2">OpenAI (Execution)</div>
+                        <ul class="text-xs text-slate-500 space-y-1">
+                            <li>Code generation &amp; scripts</li>
+                            <li>Data extraction &amp; formatting</li>
+                            <li>Quantitative calculations</li>
+                            <li>Quick lookups &amp; facts</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- ═══ TRADE ENTRY MODAL ═══ -->
@@ -866,12 +1017,21 @@
         // ═══════════════════════════════════════════════════════
 
         function switchTab(tab) {
-            ['screener', 'journal', 'performance', 'broker', 'system'].forEach(t => {
+            ['screener', 'journal', 'performance', 'broker', 'system', 'ai'].forEach(t => {
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
                 const btn = document.getElementById(`tab-${t}`);
-                btn.className = t === tab
-                    ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
-                    : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
+                if (t === 'ai') {
+                    // AI tab has special purple styling
+                    btn.className = t === tab
+                        ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
+                        : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
+                    if (t === tab) btn.style.color = '#a78bfa';
+                    else btn.style.color = '#a78bfa';
+                } else {
+                    btn.className = t === tab
+                        ? 'tab-active pb-3 border-b-2 text-sm font-semibold transition'
+                        : 'tab-inactive pb-3 border-b-2 text-sm font-semibold transition';
+                }
             });
 
             // Load data for the selected tab
@@ -879,6 +1039,7 @@
             if (tab === 'performance') loadPerformance();
             if (tab === 'broker') loadBrokerData();
             if (tab === 'system') loadSystemStatus();
+            if (tab === 'ai') loadAIStatus();
         }
 
         // ═══════════════════════════════════════════════════════
@@ -2341,6 +2502,154 @@
                 updateCacheDisplay(lastCacheAge);
             }
         }, 1000);
+
+        // ═══════════════════════════════════════════════════════
+        // AI COMMAND CENTER
+        // ═══════════════════════════════════════════════════════
+
+        async function loadAIStatus() {
+            try {
+                const resp = await fetch('/api/v1/ai/status');
+                if (!resp.ok) return;
+                const data = await resp.json();
+
+                // Claude card
+                const cc = data.claude;
+                document.getElementById('ai-claude-dot').style.background = cc.configured ? '#a78bfa' : '#475569';
+                document.getElementById('ai-claude-model').textContent = cc.model;
+                document.getElementById('ai-claude-calls').textContent = cc.calls;
+                document.getElementById('ai-claude-tokens').textContent = (cc.total_input_tokens + cc.total_output_tokens).toLocaleString();
+                document.getElementById('ai-claude-errors').textContent = cc.errors;
+                if (cc.configured) document.getElementById('ai-claude-card').style.borderColor = '#6d28d9';
+
+                // OpenAI card
+                const oc = data.openai;
+                document.getElementById('ai-openai-dot').style.background = oc.configured ? '#34d399' : '#475569';
+                document.getElementById('ai-openai-model').textContent = oc.model;
+                document.getElementById('ai-openai-calls').textContent = oc.calls;
+                document.getElementById('ai-openai-tokens').textContent = (oc.total_input_tokens + oc.total_output_tokens).toLocaleString();
+                document.getElementById('ai-openai-errors').textContent = oc.errors;
+                if (oc.configured) document.getElementById('ai-openai-card').style.borderColor = '#059669';
+
+            } catch (e) {
+                console.warn('AI status fetch failed:', e);
+            }
+        }
+
+        async function sendAIPrompt() {
+            const prompt = document.getElementById('ai-prompt').value.trim();
+            if (!prompt) return;
+
+            const mode = document.getElementById('ai-mode').value;
+            const ticker = document.getElementById('ai-ticker').value.trim().toUpperCase();
+            const btn = document.getElementById('ai-send-btn');
+            const responseArea = document.getElementById('ai-response-area');
+            const singleResp = document.getElementById('ai-single-response');
+            const dualResp = document.getElementById('ai-dual-response');
+
+            btn.disabled = true;
+            btn.textContent = 'Thinking...';
+            btn.style.opacity = '0.5';
+            responseArea.classList.remove('hidden');
+            singleResp.classList.add('hidden');
+            dualResp.classList.add('hidden');
+            document.getElementById('ai-routing-info').textContent = 'Routing request...';
+
+            try {
+                if (mode === 'dual') {
+                    // Dual mode — send to both
+                    const resp = await fetch('/api/v1/ai/dual', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ prompt, max_tokens: 4096 }),
+                    });
+                    const data = await resp.json();
+                    dualResp.classList.remove('hidden');
+
+                    if (data.claude) {
+                        document.getElementById('ai-dual-claude-content').textContent = data.claude.content || data.claude.error || 'No response';
+                        document.getElementById('ai-dual-claude-meta').textContent = `${data.claude.latency_ms}ms | ${data.claude.output_tokens} tokens`;
+                    } else {
+                        document.getElementById('ai-dual-claude-content').textContent = 'Not configured';
+                    }
+                    if (data.openai) {
+                        document.getElementById('ai-dual-openai-content').textContent = data.openai.content || data.openai.error || 'No response';
+                        document.getElementById('ai-dual-openai-meta').textContent = `${data.openai.latency_ms}ms | ${data.openai.output_tokens} tokens`;
+                    } else {
+                        document.getElementById('ai-dual-openai-content').textContent = 'Not configured';
+                    }
+                    document.getElementById('ai-routing-info').textContent = 'Dual mode — sent to both providers in parallel';
+
+                } else if (ticker) {
+                    // Ticker analysis mode
+                    const body = { ticker, question: prompt, max_tokens: 4096 };
+                    if (mode !== 'auto') body.provider = mode;
+
+                    const resp = await fetch('/api/v1/ai/analyze', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    const data = await resp.json();
+                    showSingleResponse(data);
+
+                } else {
+                    // Standard ask
+                    const body = { prompt, max_tokens: 4096 };
+                    if (mode !== 'auto') body.provider = mode;
+
+                    const resp = await fetch('/api/v1/ai/ask', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    const data = await resp.json();
+                    showSingleResponse(data);
+                }
+
+                // Refresh status after request
+                loadAIStatus();
+
+            } catch (e) {
+                singleResp.classList.remove('hidden');
+                document.getElementById('ai-resp-error').textContent = 'Request failed: ' + e.message;
+                document.getElementById('ai-resp-error').classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Send';
+                btn.style.opacity = '1';
+            }
+        }
+
+        function showSingleResponse(data) {
+            const singleResp = document.getElementById('ai-single-response');
+            singleResp.classList.remove('hidden');
+
+            document.getElementById('ai-resp-provider').textContent = data.provider;
+            document.getElementById('ai-resp-category').textContent = `category: ${data.category}`;
+            document.getElementById('ai-resp-tokens').textContent = `${data.input_tokens + data.output_tokens} tokens`;
+            document.getElementById('ai-resp-latency').textContent = `${data.latency_ms}ms`;
+
+            if (data.error) {
+                document.getElementById('ai-resp-content').textContent = '';
+                document.getElementById('ai-resp-error').textContent = data.error;
+                document.getElementById('ai-resp-error').classList.remove('hidden');
+            } else {
+                document.getElementById('ai-resp-content').textContent = data.content;
+                document.getElementById('ai-resp-error').classList.add('hidden');
+            }
+
+            const fallbackNote = data.was_fallback ? ' (fallback)' : '';
+            document.getElementById('ai-routing-info').textContent = `Routed to ${data.provider}${fallbackNote} — ${data.routing_reason}`;
+        }
+
+        // Allow Enter key to send
+        document.getElementById('ai-prompt')?.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendAIPrompt();
+            }
+        });
     </script>
 </body>
 </html>

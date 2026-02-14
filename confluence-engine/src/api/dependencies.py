@@ -16,6 +16,7 @@ Why singletons? Because:
 
 from __future__ import annotations
 
+from src.services.ai_router import AIRouter
 from src.services.cache import ResultCache
 from src.services.confluence import ConfluenceEngine
 from src.signals.base import SignalProcessor
@@ -27,6 +28,7 @@ from src.signals.options_flow import OptionsFlowProcessor
 from src.signals.short_interest import ShortInterestProcessor
 from src.signals.volatility import VolatilityProcessor
 from src.signals.vix_regime import VixRegimeProcessor
+from src.utils.ai_clients import ClaudeClient, OpenAIClient
 from src.utils.data_providers import AlpacaClient, FMPClient, UnusualWhalesClient
 
 # Non-stock tickers to exclude from universe discovery.
@@ -69,6 +71,9 @@ _processors: list[SignalProcessor] = []
 _engine: ConfluenceEngine | None = None
 _vix_processor: VixRegimeProcessor | None = None
 _cache: ResultCache = ResultCache()
+_claude_client: ClaudeClient | None = None
+_openai_client: OpenAIClient | None = None
+_ai_router: AIRouter | None = None
 
 
 def init_app(
@@ -132,15 +137,45 @@ def init_app(
     _engine = ConfluenceEngine(processors=_processors)
 
 
+def init_ai(
+    anthropic_api_key: str = "",
+    openai_api_key: str = "",
+    default_provider: str = "auto",
+    claude_model: str = "claude-sonnet-4-20250514",
+    openai_model: str = "gpt-4o",
+) -> None:
+    """
+    Initialize AI clients and the routing engine.
+
+    Called during FastAPI lifespan startup, after init_app(). Creates:
+    - Claude client (if ANTHROPIC_API_KEY is set)
+    - OpenAI client (if OPENAI_API_KEY is set)
+    - AI Router that picks the best provider per task
+    """
+    global _claude_client, _openai_client, _ai_router
+
+    _claude_client = ClaudeClient(api_key=anthropic_api_key, model=claude_model)
+    _openai_client = OpenAIClient(api_key=openai_api_key, model=openai_model)
+    _ai_router = AIRouter(
+        claude=_claude_client,
+        openai_client=_openai_client,
+        default_provider=default_provider,
+    )
+
+
 async def cleanup_app() -> None:
     """Close all shared resources. Called during shutdown."""
-    global _fmp_client, _uw_client, _alpaca_client
+    global _fmp_client, _uw_client, _alpaca_client, _claude_client, _openai_client
     if _fmp_client:
         await _fmp_client.close()
     if _uw_client:
         await _uw_client.close()
     if _alpaca_client:
         await _alpaca_client.close()
+    if _claude_client:
+        await _claude_client.close()
+    if _openai_client:
+        await _openai_client.close()
 
 
 def get_engine() -> ConfluenceEngine:
@@ -178,6 +213,13 @@ def get_alpaca_client() -> AlpacaClient | None:
 def get_cache() -> ResultCache:
     """Get the shared result cache."""
     return _cache
+
+
+def get_ai_router() -> AIRouter:
+    """Get the shared AI router instance."""
+    if _ai_router is None:
+        raise RuntimeError("AI router not initialized — call init_ai() first")
+    return _ai_router
 
 
 async def get_watchlist_tickers() -> list[str]:

@@ -23,6 +23,10 @@ pyyaml==6.0.2
 # Broker (Phase 4)
 alpaca-py==0.33.1
 
+# AI Command Center
+anthropic==0.43.0
+openai==1.58.1
+
 # Dev/Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0
