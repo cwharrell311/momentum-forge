@@ -12,14 +12,14 @@ on:
   workflow_dispatch:
     inputs:
       stocks:
-        description: "Stock symbols (space-separated)"
+        description: "All instruments — stocks, ETFs, treasuries, commodities (space-separated)"
         required: false
-        default: "SPY QQQ AAPL MSFT"
+        default: "SPY QQQ IWM DIA TLT IEF SHY HYG GLD SLV USO UNG XLF XLE XLK XLV SMH TQQQ SOXL EEM AAPL NVDA TSLA META AMZN MSFT AMD JPM"
         type: string
       crypto:
         description: "Crypto pairs (space-separated)"
         required: false
-        default: "BTC/USDT ETH/USDT SOL/USDT"
+        default: "BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT"
         type: string
       period:
         description: "Stock data period"
@@ -85,7 +85,7 @@ jobs:
 
       - name: Run stock backtest
         run: |
-          STOCKS="${{ inputs.stocks || 'SPY QQQ AAPL' }}"
+          STOCKS="${{ inputs.stocks || 'SPY QQQ IWM DIA TLT IEF SHY HYG GLD SLV USO XLF XLE XLK SMH TQQQ EEM AAPL NVDA TSLA META AMZN MSFT AMD JPM' }}"
           PERIOD="${{ inputs.period || '2y' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"
@@ -160,7 +160,7 @@ for r in results[:10]:
 
       - name: Run crypto backtest
         run: |
-          CRYPTO="${{ inputs.crypto || 'BTC/USDT ETH/USDT SOL/USDT' }}"
+          CRYPTO="${{ inputs.crypto || 'BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT' }}"
           DAYS="${{ inputs.crypto_days || '365' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"

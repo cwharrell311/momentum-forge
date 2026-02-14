@@ -297,7 +297,11 @@ async def discover_active_tickers() -> list[str]:
             log.info("No market flow data — falling back to watchlist")
             return await get_watchlist_tickers()
 
-        # Extract unique STOCK tickers, filtering out everything else
+        # Extract tickers from flow data.
+        # If universe_stocks_only=True, filter out ETFs/ETNs (legacy).
+        # Default (False): include ALL instruments — ETFs, treasuries,
+        # commodities, futures proxies, everything tradeable.
+        stocks_only = settings.universe_stocks_only
         ticker_premium: dict[str, float] = {}
         skipped_etfs: set[str] = set()
         for alert in flow_alerts:
@@ -309,17 +313,20 @@ async def discover_active_tickers() -> list[str]:
             ).upper().strip()
             if not ticker or len(ticker) > 6:
                 continue
-            # Skip non-equity symbols
+            # Always skip cash-settled index options (not directly tradeable)
             if ticker.startswith("^") or ticker.startswith("$"):
                 continue
-            # Skip ETFs, ETNs, indexes, leveraged products
-            if ticker in _NON_STOCK_TICKERS:
+            if ticker in ("SPX", "SPXW", "NDX", "VIX", "VIXW", "RUT", "DJX", "OEX", "XSP"):
                 skipped_etfs.add(ticker)
                 continue
-            # Also check UW's is_etf field if present
-            if alert.get("is_etf") is True:
-                skipped_etfs.add(ticker)
-                continue
+            # Only filter ETFs if explicitly configured to stocks-only
+            if stocks_only:
+                if ticker in _NON_STOCK_TICKERS:
+                    skipped_etfs.add(ticker)
+                    continue
+                if alert.get("is_etf") is True:
+                    skipped_etfs.add(ticker)
+                    continue
 
             premium = 0.0
             for key in ("total_premium", "premium", "cost_basis"):
@@ -340,9 +347,11 @@ async def discover_active_tickers() -> list[str]:
             reverse=True,
         )[:max_tickers]
 
+        filter_mode = "stocks-only" if stocks_only else "all-instruments"
         log.info(
-            "Universe: %d stocks discovered from %d flow alerts "
-            "(filtered %d ETFs/indexes: %s)",
+            "Universe [%s]: %d tickers discovered from %d flow alerts "
+            "(skipped %d non-tradeable: %s)",
+            filter_mode,
             len(discovered),
             len(flow_alerts),
             len(skipped_etfs),

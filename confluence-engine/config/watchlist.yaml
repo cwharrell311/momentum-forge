@@ -1,9 +1,85 @@
-# Default Watchlist — 35 tickers
-# FMP free tier: 250 calls/day. UW: 15,000 calls/day.
-# At 5-min scans: ~156 FMP calls + ~5,000 UW calls per day.
+# Momentum Forge — Full Instrument Universe (~80 tickers)
+# All tradeable asset classes: stocks, ETFs, indices, treasuries,
+# commodities, futures proxies, sectors, volatility, international.
+#
+# API budget at 15-min scans with 80 tickers:
+#   FMP: ~240 calls/day (250 free limit — bump to 30-min if needed)
+#   UW:  ~8,000 calls/day (15K limit)
 
 tickers:
-  # ── Mega-cap tech — highest options liquidity ──
+  # ═══════════════════════════════════════════
+  # BROAD MARKET INDICES (ETFs)
+  # ═══════════════════════════════════════════
+  - SPY     # S&P 500
+  - QQQ     # Nasdaq 100
+  - IWM     # Russell 2000 (small caps)
+  - DIA     # Dow Jones 30
+  - MDY     # S&P 400 Mid-Cap
+  - RSP     # Equal-Weight S&P 500
+
+  # ═══════════════════════════════════════════
+  # TREASURIES & FIXED INCOME
+  # ═══════════════════════════════════════════
+  - TLT     # 20+ Year Treasury (long duration)
+  - IEF     # 7-10 Year Treasury (medium)
+  - SHY     # 1-3 Year Treasury (short)
+  - TIP     # TIPS (inflation-protected)
+  - HYG     # High Yield Corporate Bonds
+  - LQD     # Investment Grade Corporate Bonds
+  - BIL     # 1-3 Month T-Bills (cash proxy)
+
+  # ═══════════════════════════════════════════
+  # COMMODITIES & REAL ASSETS
+  # ═══════════════════════════════════════════
+  - GLD     # Gold
+  - SLV     # Silver
+  - USO     # Crude Oil (WTI futures proxy)
+  - UNG     # Natural Gas futures proxy
+  - GDX     # Gold Miners
+  - COPX    # Copper Miners (copper proxy)
+  - DBA     # Agriculture basket
+
+  # ═══════════════════════════════════════════
+  # SECTOR ETFs — rotation tracking
+  # ═══════════════════════════════════════════
+  - XLF     # Financials
+  - XLE     # Energy
+  - XLK     # Technology
+  - XLV     # Healthcare
+  - XLI     # Industrials
+  - XLP     # Consumer Staples
+  - XLU     # Utilities
+  - XLRE    # Real Estate
+  - XBI     # Biotech
+  - SMH     # Semiconductors
+  - KRE     # Regional Banks
+
+  # ═══════════════════════════════════════════
+  # VOLATILITY INSTRUMENTS
+  # ═══════════════════════════════════════════
+  - UVXY    # 1.5x VIX Short-Term Futures
+  - SVXY    # -0.5x VIX (short vol)
+
+  # ═══════════════════════════════════════════
+  # LEVERAGED (for momentum/trend strategies)
+  # ═══════════════════════════════════════════
+  - TQQQ    # 3x Nasdaq
+  - SQQQ    # -3x Nasdaq
+  - SOXL    # 3x Semiconductors
+  - TNA     # 3x Russell 2000
+  - TMF     # 3x 20+ Year Treasury
+
+  # ═══════════════════════════════════════════
+  # INTERNATIONAL
+  # ═══════════════════════════════════════════
+  - EEM     # Emerging Markets
+  - EFA     # EAFE (Developed ex-US)
+  - FXI     # China Large-Cap
+  - EWJ     # Japan
+
+  # ═══════════════════════════════════════════
+  # MEGA-CAP TECH — highest liquidity
+  # ═══════════════════════════════════════════
   - AAPL
   - NVDA
   - TSLA
@@ -14,7 +90,9 @@ tickers:
   - GOOGL
   - AVGO
 
-  # ── High momentum / heavy options flow ──
+  # ═══════════════════════════════════════════
+  # HIGH-MOMENTUM / HEAVY OPTIONS FLOW
+  # ═══════════════════════════════════════════
   - PLTR
   - SMCI
   - ARM
@@ -23,27 +101,15 @@ tickers:
   - NFLX
   - CRM
   - SOFI
-  - MARA
 
-  # ── Blue chip / swing-friendly ──
+  # ═══════════════════════════════════════════
+  # BLUE CHIP / SWING
+  # ═══════════════════════════════════════════
   - JPM
   - V
   - UNH
   - LLY
   - BA
-  - DIS
+  - GS
+  - CAT
   - COST
-
-  # ── Sector ETFs — read the rotation ──
-  - SPY    # S&P 500
-  - QQQ    # Nasdaq 100
-  - IWM    # Russell 2000 (small caps)
-  - XLF    # Financials
-  - XLE    # Energy
-  - XLK    # Technology
-  - GLD    # Gold
-  - TLT    # Long-term treasuries
-
-  # ── Volatility / meme-adjacent — squeeze candidates ──
-  - RIVN
-  - GME
