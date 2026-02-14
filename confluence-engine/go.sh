@@ -9,7 +9,7 @@
 # ============================================================
 
 set -e
-cd "$(dirname "$0")/confluence-engine"
+cd "$(dirname "$0")"
 
 # Install deps quietly if missing
 pip3 install -q yfinance matplotlib tabulate 2>/dev/null || true
