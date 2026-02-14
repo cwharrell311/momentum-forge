@@ -198,6 +198,29 @@ open http://localhost:8000
 open http://localhost:8000/docs
 ```
 
+## Backtesting Commands
+
+```bash
+# --- Data Management (run from Mac with internet) ---
+./go.sh data download       # Auto-fetch SPY+VIX from Yahoo Finance, cache locally
+./go.sh data status         # Show what data is cached (source, date range, rows)
+./go.sh data clear          # Wipe cache (re-downloads or falls back to synthetic next run)
+
+# Import manually-downloaded CSVs from Yahoo Finance
+./go.sh data import ~/Downloads/SPY.csv              # SPY only
+./go.sh data import ~/Downloads/SPY.csv VIX.csv      # SPY + VIX
+
+# --- Run Backtests ---
+./go.sh backtest            # 5-year backtest (uses cached data or synthetic fallback)
+./go.sh backtest 3          # 3-year backtest
+./go.sh optimize            # Backtest + parameter optimization
+./go.sh results             # Show last backtest results summary
+```
+
+**Data source priority:** cached parquet > CSV import > yfinance auto-download > synthetic fallback.
+When running on cloud/sandbox (no internet), synthetic data is used automatically.
+Results clearly label the data source so you always know what you're testing against.
+
 ## Configuration
 
 **Environment variables (.env):**

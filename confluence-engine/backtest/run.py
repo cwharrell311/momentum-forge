@@ -23,7 +23,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-from .data import fetch_spy_daily, fetch_vix_daily, add_indicators
+from .data import (
+    fetch_spy_daily, fetch_vix_daily, add_indicators,
+    import_spy_csv, import_vix_csv, download_all, cache_status, clear_cache,
+)
 from .strategies import (
     get_all_strategies, Strategy,
     GapAndGo, GapFade, OpeningRangeBreakout, BollingerMeanReversion,
@@ -338,6 +341,7 @@ def save_results_json(
     bh_result: BacktestResult,
     best: BacktestResult,
     optimized: list[BacktestResult] = None,
+    **kwargs,
 ) -> str:
     """Save all backtest results to a JSON file for machine-readable analysis."""
     active = [r for r in results if r.total_trades > 0]
@@ -345,6 +349,7 @@ def save_results_json(
 
     data = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "data_source": kwargs.get("data_source", "unknown"),
         "ranking": [_result_to_dict(r) for r in ranked],
         "benchmark": _result_to_dict(bh_result),
         "best_by_category": {
@@ -380,6 +385,10 @@ def print_results_summary() -> str:
     lines.append("=" * 60)
     lines.append("  BACKTEST RESULTS SUMMARY")
     lines.append(f"  Generated: {data['generated_at']}")
+    data_src = data.get("data_source", "unknown")
+    lines.append(f"  Data source: {data_src}")
+    if "synthetic" in str(data_src):
+        lines.append("  *** SYNTHETIC DATA — run ./go.sh data download for real results ***")
     lines.append("=" * 60)
 
     # Ranking table
@@ -418,22 +427,64 @@ def main():
     parser.add_argument("--optimize", action="store_true", help="Run parameter optimization")
     parser.add_argument("--no-cache", action="store_true", help="Force fresh data download")
     parser.add_argument("--results", action="store_true", help="Show last backtest results summary")
+    parser.add_argument("--synthetic", action="store_true", help="Force synthetic data (skip yfinance)")
+    parser.add_argument("--import-spy", type=str, help="Import SPY data from CSV file")
+    parser.add_argument("--import-vix", type=str, help="Import VIX data from CSV file")
+    parser.add_argument("--download", action="store_true", help="Download real data and cache it")
+    parser.add_argument("--data-status", action="store_true", help="Show cached data status")
+    parser.add_argument("--clear-cache", action="store_true", help="Clear cached data")
     args = parser.parse_args()
 
+    # --- Data management commands ---
     if args.results:
         print_results_summary()
+        return
+
+    if args.data_status:
+        cache_status()
+        return
+
+    if args.clear_cache:
+        clear_cache()
+        return
+
+    if args.download:
+        download_all(years=args.years)
+        return
+
+    if args.import_spy:
+        import_spy_csv(args.import_spy, years=args.years)
+        if not args.import_vix:
+            return
+
+    if args.import_vix:
+        import_vix_csv(args.import_vix, years=args.years)
         return
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
     # --- Fetch Data ---
+    force = "synthetic" if args.synthetic else None
+
     print(f"Fetching {args.years} years of SPY daily data...")
-    spy_df = fetch_spy_daily(years=args.years, use_cache=not args.no_cache)
+    spy_df, spy_source = fetch_spy_daily(
+        years=args.years, use_cache=not args.no_cache, force_source=force,
+    )
     print(f"  Got {len(spy_df)} bars from {spy_df.index[0].date()} to {spy_df.index[-1].date()}")
+    print(f"  Data source: {spy_source}")
 
     print("Fetching VIX data for regime filtering...")
-    vix_df = fetch_vix_daily(years=args.years, use_cache=not args.no_cache)
+    vix_df, vix_source = fetch_vix_daily(
+        years=args.years, use_cache=not args.no_cache, force_source=force,
+    )
     print(f"  Got {len(vix_df)} VIX bars")
+    print(f"  Data source: {vix_source}")
+
+    # Flag if using synthetic data
+    using_real_data = "synthetic" not in spy_source
+    if not using_real_data:
+        print("\n  ** SYNTHETIC DATA — results are illustrative only **")
+        print("  ** For real results: ./go.sh data download  (requires internet) **")
 
     # Merge VIX into SPY data
     spy_df = spy_df.join(vix_df, how="left")
@@ -527,7 +578,10 @@ def main():
         print(format_results_table(wf_results))
 
     # --- Save machine-readable results ---
-    json_path = save_results_json(results, bh_result, best, optimized or None)
+    json_path = save_results_json(
+        results, bh_result, best, optimized or None,
+        data_source=spy_source,
+    )
     print(f"  Results JSON: {json_path}")
 
     # --- Summary ---
@@ -551,6 +605,12 @@ def main():
 
     alpha = best.cagr_pct - bh_result.cagr_pct
     print(f"\n  Alpha vs B&H:   {alpha:+.1f}% CAGR")
+
+    print(f"\n  Data source:    {spy_source}")
+    if not using_real_data:
+        print("  *** SYNTHETIC DATA — download real data for production results ***")
+        print("  *** Run: ./go.sh data download ***")
+
     print(f"\n  Results saved to: {OUTPUT_DIR}/")
     print("=" * 60)
 
