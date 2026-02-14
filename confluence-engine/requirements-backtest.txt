@@ -1,0 +1,15 @@
+# Backtesting-only dependencies.
+# Used by GitHub Actions workflows — no web server, no database, no Redis.
+# Lightweight and fast to install.
+
+numpy>=1.24.0
+pandas>=2.0.0
+yfinance>=0.2.31
+scipy>=1.11.0
+
+# ccxt for crypto exchange data (Binance etc.)
+ccxt>=4.0.0
+
+# AI evaluation (optional — only used with --ai-eval flag)
+anthropic>=0.43.0
+openai>=1.58.1
