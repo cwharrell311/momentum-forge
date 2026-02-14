@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from src.api.dependencies import cleanup_app, init_ai, init_app
 from src.api.routes import broker, command_center, confluence, performance, regime, signals, system, trades, trading_engine, watchlist
@@ -157,10 +157,14 @@ app.include_router(trading_engine.router, prefix="/api/v1/engine", tags=["tradin
 _dashboard_path = Path(__file__).parent.parent / "ui" / "dashboard.html"
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/", include_in_schema=False)
 async def dashboard():
     """Serve the main dashboard. Open http://localhost:8000 in your browser."""
-    return _dashboard_path.read_text()
+    return Response(
+        content=_dashboard_path.read_text(),
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 # ── Health Check ──
