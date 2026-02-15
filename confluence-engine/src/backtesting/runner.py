@@ -94,6 +94,7 @@ def print_banner():
 ║  HMM Regime · FracDiff · GARCH Vol · Monte Carlo             ║
 ║  Donchian Breakout · Keltner Channel · Momentum Rank         ║
 ║  Multi-Position · Multi-Timeframe · Cross-Asset Context      ║
+║  Holdout Year · Feature Importance · Permutation Ranking     ║
 ║  Stocks · Crypto · Prediction Markets · Genetic Optimizer    ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
@@ -179,6 +180,66 @@ def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -
     return result
 
 
+def _run_backtest_on_split(
+    strategy,
+    df: pd.DataFrame,
+    symbol: str,
+    asset_class: str,
+    config: BacktestConfig,
+    walk_forward: bool,
+    use_cpcv: bool,
+    wf_windows: int,
+    total_combos: int,
+    ml=None,
+) -> tuple[dict | None, BacktestResult | None]:
+    """Run a single strategy backtest (shared by train and holdout)."""
+    meta = strategy.meta()
+
+    if use_cpcv:
+        cpcv = cpcv_analysis(
+            strategy, df, symbol, asset_class, config,
+            num_groups=6, test_groups=2, purge_bars=5,
+        )
+        summary = {
+            "strategy": meta.name,
+            "symbol": symbol,
+            "asset_class": asset_class,
+            "sharpe": f"{cpcv.mean_sharpe:.2f}",
+            "cagr": f"{cpcv.mean_cagr:+.2f}%",
+            "max_drawdown": f"{cpcv.mean_max_dd:.2f}%",
+            "prob_overfit": f"{cpcv.prob_overfit:.1%}",
+            "prob_sharpe_pos": f"{cpcv.prob_sharpe_positive:.1%}",
+            "deflated_sharpe": f"{cpcv.deflated_sharpe:.2f}",
+            "cpcv_paths": cpcv.num_paths,
+            "total_trades": "N/A",
+            "win_rate": "N/A",
+        }
+        return summary, None
+
+    elif walk_forward:
+        wf = walk_forward_analysis(
+            strategy, df, symbol, asset_class, config,
+            num_windows=wf_windows,
+        )
+        report = wf.combined_oos_report
+        summary = report.summary()
+        summary["strategy"] = meta.name
+        summary["symbol"] = symbol
+        summary["asset_class"] = asset_class
+        summary["wf_efficiency"] = f"{wf.wf_efficiency:.3f}"
+        return summary, None
+
+    else:
+        bt = run_backtest(strategy, df, symbol, asset_class, config,
+                          num_trials=total_combos, meta_labeler=ml)
+        report = bt.report
+        summary = report.summary()
+        summary["strategy"] = meta.name
+        summary["symbol"] = symbol
+        summary["asset_class"] = asset_class
+        return summary, bt
+
+
 def run_stock_backtest(
     symbols: list[str],
     period: str = "2y",
@@ -187,12 +248,22 @@ def run_stock_backtest(
     walk_forward: bool = False,
     wf_windows: int = 5,
     use_cpcv: bool = False,
+    holdout_start: str | None = None,
+    feature_importance: bool = False,
 ) -> list[dict]:
-    """Run backtest on stock symbols."""
+    """Run backtest on stock symbols.
+
+    Args:
+        holdout_start: ISO date string (e.g., "2025-01-01"). Data after this date
+            is reserved as holdout — NEVER used for training/optimization. Only
+            strategies that pass train+validation are evaluated on holdout.
+        feature_importance: If True, run permutation importance on top strategies.
+    """
     if config is None:
         config = BacktestConfig()
 
     results = []
+    holdout_results = []
     bt_results = []  # Keep BacktestResult objects for Sharpe weighting
     strategies = get_all_strategies("stock")
     total_combos = len(symbols) * len(strategies)
@@ -220,7 +291,25 @@ def run_stock_backtest(
 
         # Preprocess: add context + signal features
         df = _preprocess_data(data.df, context_df)
-        print(f"  Got {len(df)} bars from {df.index[0].date()} to {df.index[-1].date()}")
+
+        # Split into train+validation vs holdout
+        holdout_df = None
+        if holdout_start:
+            holdout_date = pd.Timestamp(holdout_start)
+            train_df = df[df.index < holdout_date].copy()
+            holdout_df = df[df.index >= holdout_date].copy()
+            if len(holdout_df) < 20:
+                print(f"  WARNING: Only {len(holdout_df)} holdout bars — insufficient data after {holdout_start}")
+                holdout_df = None
+                train_df = df
+            else:
+                print(f"  Got {len(train_df)} train bars ({train_df.index[0].date()} → {train_df.index[-1].date()})")
+                print(f"  Got {len(holdout_df)} HOLDOUT bars ({holdout_df.index[0].date()} → {holdout_df.index[-1].date()}) — SEALED")
+        else:
+            train_df = df
+
+        if not holdout_df:
+            print(f"  Got {len(train_df)} bars from {train_df.index[0].date()} to {train_df.index[-1].date()}")
 
         for strategy in strategies:
             meta = strategy.meta()
@@ -230,61 +319,37 @@ def run_stock_backtest(
             ml = create_meta_labeler_for_strategy(meta.name)
 
             try:
-                if use_cpcv:
-                    cpcv = cpcv_analysis(
-                        strategy, df, symbol, "stock", config,
-                        num_groups=6, test_groups=2, purge_bars=5,
-                    )
-                    summary = {
-                        "strategy": meta.name,
-                        "symbol": symbol,
-                        "asset_class": "stock",
-                        "sharpe": f"{cpcv.mean_sharpe:.2f}",
-                        "cagr": f"{cpcv.mean_cagr:+.2f}%",
-                        "max_drawdown": f"{cpcv.mean_max_dd:.2f}%",
-                        "prob_overfit": f"{cpcv.prob_overfit:.1%}",
-                        "prob_sharpe_pos": f"{cpcv.prob_sharpe_positive:.1%}",
-                        "deflated_sharpe": f"{cpcv.deflated_sharpe:.2f}",
-                        "cpcv_paths": cpcv.num_paths,
-                        "total_trades": "N/A",
-                        "win_rate": "N/A",
-                    }
+                summary, bt = _run_backtest_on_split(
+                    strategy, train_df, symbol, "stock", config,
+                    walk_forward, use_cpcv, wf_windows, total_combos, ml,
+                )
+                if summary:
                     results.append(summary)
-                    print(f"CPCV mean_sharpe={cpcv.mean_sharpe:.2f} P(overfit)={cpcv.prob_overfit:.1%} paths={cpcv.num_paths}")
-
-                elif walk_forward:
-                    wf = walk_forward_analysis(
-                        strategy, df, symbol, "stock", config,
-                        num_windows=wf_windows,
-                    )
-                    report = wf.combined_oos_report
-                    summary = report.summary()
-                    summary["strategy"] = meta.name
-                    summary["symbol"] = symbol
-                    summary["asset_class"] = "stock"
-                    summary["wf_efficiency"] = f"{wf.wf_efficiency:.3f}"
-                    results.append(summary)
-
-                    if report.is_viable:
-                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}% DD={report.drawdown.max_drawdown_pct:.1f}%")
-                    else:
-                        print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
-
-                else:
-                    bt = run_backtest(strategy, df, symbol, "stock", config,
-                                      num_trials=total_combos, meta_labeler=ml)
+                if bt:
                     bt_results.append(bt)
-                    report = bt.report
-                    summary = report.summary()
-                    summary["strategy"] = meta.name
-                    summary["symbol"] = symbol
-                    summary["asset_class"] = "stock"
-                    results.append(summary)
 
-                    if report.is_viable:
-                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}% DD={report.drawdown.max_drawdown_pct:.1f}%")
-                    else:
-                        print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
+                # Print result
+                sharpe_val = float(str(summary.get("sharpe", "0")).replace("+", ""))
+                if sharpe_val > 0.5:
+                    print(f"✓ Sharpe={summary['sharpe']} CAGR={summary.get('cagr', 'N/A')}")
+                else:
+                    trades = summary.get("total_trades", "?")
+                    print(f"✗ Sharpe={summary['sharpe']} ({trades} trades)")
+
+                # Holdout evaluation — only for strategies that pass train
+                if holdout_df is not None and len(holdout_df) >= 50 and sharpe_val > 0.3:
+                    try:
+                        holdout_bt = run_backtest(strategy, holdout_df, symbol, "stock", config)
+                        h_report = holdout_bt.report
+                        h_summary = h_report.summary()
+                        h_summary["strategy"] = meta.name
+                        h_summary["symbol"] = symbol
+                        h_summary["asset_class"] = "stock"
+                        h_summary["split"] = "HOLDOUT"
+                        h_summary["train_sharpe"] = summary["sharpe"]
+                        holdout_results.append(h_summary)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"ERROR: {e}")
@@ -297,6 +362,68 @@ def run_stock_backtest(
             for a in allocations[:5]:
                 print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
+    # Holdout report — the final gate
+    if holdout_results:
+        print(f"\n{'═' * 60}")
+        print(f"  HOLDOUT RESULTS ({holdout_start} → present) — UNSEEN DATA")
+        print(f"  {'Strategy':25s} {'Symbol':12s} {'Train':>8s} {'Holdout':>8s} {'CAGR':>8s} {'MaxDD':>8s} {'Verdict':>8s}")
+        print(f"  {'─' * 75}")
+        for h in sorted(holdout_results,
+                        key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")),
+                        reverse=True):
+            train_s = h.get("train_sharpe", "?")
+            hold_s = h.get("sharpe", "0")
+            hold_s_val = float(str(hold_s).replace("+", ""))
+            train_s_val = float(str(train_s).replace("+", ""))
+            cagr = h.get("cagr", "N/A")
+            dd = h.get("max_drawdown", "N/A")
+
+            # Verdict: PASS if holdout Sharpe > 0.5 AND doesn't degrade more than 60%
+            if hold_s_val > 0.5 and (train_s_val <= 0 or hold_s_val / max(0.01, train_s_val) > 0.4):
+                verdict = "PASS"
+            elif hold_s_val > 0:
+                verdict = "WEAK"
+            else:
+                verdict = "FAIL"
+
+            print(f"  {h['strategy']:25s} {h['symbol']:12s} {train_s:>8s} {hold_s:>8s} {cagr:>8s} {dd:>8s} {verdict:>8s}")
+
+        passed = [h for h in holdout_results
+                  if float(str(h.get("sharpe", "0")).replace("+", "")) > 0.5]
+        print(f"\n  {len(passed)}/{len(holdout_results)} strategies PASSED holdout gate")
+
+    # Feature importance analysis on top performers
+    if feature_importance:
+        try:
+            from src.backtesting.feature_importance import rank_features, print_feature_ranking
+            # Run on the best performing strategy per symbol
+            viable_train = [r for r in results
+                           if float(str(r.get("sharpe", "0")).replace("+", "")) > 0.5]
+            if viable_train:
+                print(f"\n{'═' * 60}")
+                print(f"  FEATURE IMPORTANCE ANALYSIS")
+                print(f"{'═' * 60}")
+                # Group by symbol, pick best strategy
+                best_per_symbol = {}
+                for r in viable_train:
+                    sym = r["symbol"]
+                    s_val = float(str(r.get("sharpe", "0")).replace("+", ""))
+                    if sym not in best_per_symbol or s_val > best_per_symbol[sym][1]:
+                        best_per_symbol[sym] = (r, s_val)
+
+                for sym, (best_r, _) in list(best_per_symbol.items())[:3]:
+                    strat_name = best_r["strategy"]
+                    # Re-create strategy instance
+                    matching = [s for s in strategies if s.meta().name == strat_name]
+                    if matching:
+                        ranking = rank_features(matching[0], train_df, sym, "stock", config,
+                                                n_permutations=3, check_stability=True)
+                        print(print_feature_ranking(ranking))
+        except Exception as e:
+            print(f"  Feature importance failed: {e}")
+
+    # Merge holdout results into main results for downstream processing
+    results.extend(holdout_results)
     return results
 
 
@@ -307,12 +434,20 @@ def run_crypto_backtest(
     config: BacktestConfig | None = None,
     walk_forward: bool = False,
     use_cpcv: bool = False,
+    holdout_start: str | None = None,
+    feature_importance: bool = False,
 ) -> list[dict]:
-    """Run backtest on crypto pairs."""
+    """Run backtest on crypto pairs.
+
+    Args:
+        holdout_start: ISO date string. Data after this date is SEALED holdout.
+        feature_importance: If True, run permutation importance on top strategies.
+    """
     if config is None:
         config = BacktestConfig()
 
     results = []
+    holdout_results = []
     bt_results = []
     strategies = get_all_strategies("crypto")
 
@@ -331,7 +466,27 @@ def run_crypto_backtest(
 
         # Preprocess: add signal features (no context for crypto - VIX/DXY less relevant)
         df = _preprocess_data(data.df)
-        print(f"  Got {len(df)} bars")
+
+        # Split into train+validation vs holdout
+        holdout_df = None
+        if holdout_start:
+            holdout_date = pd.Timestamp(holdout_start)
+            train_df = df[df.index < holdout_date].copy()
+            holdout_df = df[df.index >= holdout_date].copy()
+            if len(holdout_df) < 20:
+                print(f"  WARNING: Only {len(holdout_df)} holdout bars — insufficient data after {holdout_start}")
+                holdout_df = None
+                train_df = df
+            else:
+                print(f"  Got {len(train_df)} train bars ({train_df.index[0].date()} → {train_df.index[-1].date()})")
+                print(f"  Got {len(holdout_df)} HOLDOUT bars ({holdout_df.index[0].date()} → {holdout_df.index[-1].date()}) — SEALED")
+        else:
+            train_df = df
+
+        if not holdout_df:
+            print(f"  Got {len(train_df)} bars")
+
+        total_combos = len(pairs) * len(strategies)
 
         for strategy in strategies:
             meta = strategy.meta()
@@ -341,62 +496,37 @@ def run_crypto_backtest(
             ml = create_meta_labeler_for_strategy(meta.name)
 
             try:
-                if use_cpcv:
-                    cpcv = cpcv_analysis(
-                        strategy, df, pair, "crypto", config,
-                        num_groups=6, test_groups=2, purge_bars=5,
-                    )
-                    summary = {
-                        "strategy": meta.name,
-                        "symbol": pair,
-                        "asset_class": "crypto",
-                        "sharpe": f"{cpcv.mean_sharpe:.2f}",
-                        "cagr": f"{cpcv.mean_cagr:+.2f}%",
-                        "max_drawdown": f"{cpcv.mean_max_dd:.2f}%",
-                        "prob_overfit": f"{cpcv.prob_overfit:.1%}",
-                        "prob_sharpe_pos": f"{cpcv.prob_sharpe_positive:.1%}",
-                        "deflated_sharpe": f"{cpcv.deflated_sharpe:.2f}",
-                        "cpcv_paths": cpcv.num_paths,
-                        "total_trades": "N/A",
-                        "win_rate": "N/A",
-                    }
+                summary, bt = _run_backtest_on_split(
+                    strategy, train_df, pair, "crypto", config,
+                    walk_forward, use_cpcv, 3, total_combos, ml,
+                )
+                if summary:
                     results.append(summary)
-                    print(f"CPCV mean_sharpe={cpcv.mean_sharpe:.2f} P(overfit)={cpcv.prob_overfit:.1%} paths={cpcv.num_paths}")
-
-                elif walk_forward:
-                    wf = walk_forward_analysis(
-                        strategy, df, pair, "crypto", config,
-                        num_windows=3,
-                    )
-                    report = wf.combined_oos_report
-                    summary = report.summary()
-                    summary["strategy"] = meta.name
-                    summary["symbol"] = pair
-                    summary["asset_class"] = "crypto"
-                    summary["wf_efficiency"] = f"{wf.wf_efficiency:.3f}"
-                    results.append(summary)
-
-                    if report.is_viable:
-                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}%")
-                    else:
-                        print(f"✗ Sharpe={report.sharpe_ratio:.2f}")
-
-                else:
-                    total_combos = len(pairs) * len(strategies)
-                    bt = run_backtest(strategy, df, pair, "crypto", config,
-                                      num_trials=total_combos, meta_labeler=ml)
+                if bt:
                     bt_results.append(bt)
-                    report = bt.report
-                    summary = report.summary()
-                    summary["strategy"] = meta.name
-                    summary["symbol"] = pair
-                    summary["asset_class"] = "crypto"
-                    results.append(summary)
 
-                    if report.is_viable:
-                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}%")
-                    else:
-                        print(f"✗ Sharpe={report.sharpe_ratio:.2f}")
+                # Print result
+                sharpe_val = float(str(summary.get("sharpe", "0")).replace("+", ""))
+                if sharpe_val > 0.5:
+                    print(f"✓ Sharpe={summary['sharpe']} CAGR={summary.get('cagr', 'N/A')}")
+                else:
+                    trades = summary.get("total_trades", "?")
+                    print(f"✗ Sharpe={summary['sharpe']} ({trades} trades)")
+
+                # Holdout evaluation — only for strategies that pass train
+                if holdout_df is not None and len(holdout_df) >= 50 and sharpe_val > 0.3:
+                    try:
+                        holdout_bt = run_backtest(strategy, holdout_df, pair, "crypto", config)
+                        h_report = holdout_bt.report
+                        h_summary = h_report.summary()
+                        h_summary["strategy"] = meta.name
+                        h_summary["symbol"] = pair
+                        h_summary["asset_class"] = "crypto"
+                        h_summary["split"] = "HOLDOUT"
+                        h_summary["train_sharpe"] = summary["sharpe"]
+                        holdout_results.append(h_summary)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"ERROR: {e}")
@@ -409,6 +539,63 @@ def run_crypto_backtest(
             for a in allocations[:5]:
                 print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
+    # Holdout report
+    if holdout_results:
+        print(f"\n{'═' * 60}")
+        print(f"  HOLDOUT RESULTS ({holdout_start} → present) — UNSEEN DATA")
+        print(f"  {'Strategy':25s} {'Symbol':12s} {'Train':>8s} {'Holdout':>8s} {'CAGR':>8s} {'MaxDD':>8s} {'Verdict':>8s}")
+        print(f"  {'─' * 75}")
+        for h in sorted(holdout_results,
+                        key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")),
+                        reverse=True):
+            train_s = h.get("train_sharpe", "?")
+            hold_s = h.get("sharpe", "0")
+            hold_s_val = float(str(hold_s).replace("+", ""))
+            train_s_val = float(str(train_s).replace("+", ""))
+            cagr = h.get("cagr", "N/A")
+            dd = h.get("max_drawdown", "N/A")
+
+            if hold_s_val > 0.5 and (train_s_val <= 0 or hold_s_val / max(0.01, train_s_val) > 0.4):
+                verdict = "PASS"
+            elif hold_s_val > 0:
+                verdict = "WEAK"
+            else:
+                verdict = "FAIL"
+
+            print(f"  {h['strategy']:25s} {h['symbol']:12s} {train_s:>8s} {hold_s:>8s} {cagr:>8s} {dd:>8s} {verdict:>8s}")
+
+        passed = [h for h in holdout_results
+                  if float(str(h.get("sharpe", "0")).replace("+", "")) > 0.5]
+        print(f"\n  {len(passed)}/{len(holdout_results)} strategies PASSED holdout gate")
+
+    # Feature importance
+    if feature_importance:
+        try:
+            from src.backtesting.feature_importance import rank_features, print_feature_ranking
+            viable_train = [r for r in results
+                           if float(str(r.get("sharpe", "0")).replace("+", "")) > 0.5]
+            if viable_train:
+                print(f"\n{'═' * 60}")
+                print(f"  FEATURE IMPORTANCE ANALYSIS")
+                print(f"{'═' * 60}")
+                best_per_symbol = {}
+                for r in viable_train:
+                    sym = r["symbol"]
+                    s_val = float(str(r.get("sharpe", "0")).replace("+", ""))
+                    if sym not in best_per_symbol or s_val > best_per_symbol[sym][1]:
+                        best_per_symbol[sym] = (r, s_val)
+
+                for sym, (best_r, _) in list(best_per_symbol.items())[:3]:
+                    strat_name = best_r["strategy"]
+                    matching = [s for s in strategies if s.meta().name == strat_name]
+                    if matching:
+                        ranking = rank_features(matching[0], train_df, sym, "crypto", config,
+                                                n_permutations=3, check_stability=True)
+                        print(print_feature_ranking(ranking))
+        except Exception as e:
+            print(f"  Feature importance failed: {e}")
+
+    results.extend(holdout_results)
     return results
 
 
@@ -565,6 +752,10 @@ def main():
     parser.add_argument("--walk-forward", action="store_true", help="Use walk-forward analysis")
     parser.add_argument("--windows", type=int, default=5, help="Walk-forward windows")
     parser.add_argument("--cpcv", action="store_true", help="Use Combinatorial Purged Cross-Validation (strongest anti-overfit)")
+    parser.add_argument("--holdout-start", type=str, default=None,
+                        help="Holdout start date (ISO format, e.g., 2025-01-01). Data after this date is SEALED — never touched during training/optimization. Final go/no-go gate.")
+    parser.add_argument("--feature-importance", action="store_true",
+                        help="Run permutation feature importance on top strategies (identifies which preprocessed features actually matter)")
     parser.add_argument("--optimize", action="store_true", help="Run genetic optimization")
     parser.add_argument("--ai-eval", action="store_true", help="Use AI to evaluate results")
     parser.add_argument("--ai-provider", type=str, default="claude", choices=["claude", "openai"])
@@ -584,6 +775,25 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
 
     print_banner()
+
+    # Print analysis mode
+    modes = []
+    if args.cpcv:
+        modes.append("CPCV")
+    if args.walk_forward:
+        modes.append(f"Walk-Forward ({args.windows}w)")
+    if args.holdout_start:
+        modes.append(f"Holdout ({args.holdout_start})")
+    if args.feature_importance:
+        modes.append("Feature Importance")
+    if args.optimize:
+        modes.append("Genetic Optimizer")
+    if modes:
+        print(f"  Analysis: {' → '.join(modes)}")
+        if args.holdout_start:
+            print(f"  HOLDOUT PROTOCOL: Data after {args.holdout_start} is SEALED")
+            print(f"  Only strategies with train Sharpe > 0.3 will be evaluated on holdout")
+    print()
 
     # Config
     bt_config = BacktestConfig(
@@ -620,6 +830,7 @@ def main():
             all_results.extend(run_stock_backtest(
                 args.stocks, args.period, args.interval, bt_config,
                 args.walk_forward, args.windows, args.cpcv,
+                args.holdout_start, args.feature_importance,
             ))
 
     if args.crypto:
@@ -633,6 +844,7 @@ def main():
             all_results.extend(run_crypto_backtest(
                 args.crypto, args.crypto_days, args.interval, bt_config,
                 args.walk_forward, args.cpcv,
+                args.holdout_start, args.feature_importance,
             ))
 
     if args.polymarket_slugs or args.polymarket_search:
@@ -727,6 +939,9 @@ def main():
                     "kelly": args.kelly,
                     "walk_forward": args.walk_forward,
                     "optimize": args.optimize,
+                    "cpcv": args.cpcv,
+                    "holdout_start": args.holdout_start,
+                    "feature_importance": args.feature_importance,
                 },
                 "results": all_results,
             }, f, indent=2, default=str)
