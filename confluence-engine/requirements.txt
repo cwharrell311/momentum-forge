@@ -30,9 +30,12 @@ openai==1.58.1
 # Backtesting Engine
 numpy>=1.24.0
 pandas>=2.0.0
-yfinance>=0.2.31
+yfinance>=0.2.36
 ccxt>=4.0.0
 scipy>=1.11.0
+matplotlib>=3.8
+tabulate>=0.9
+pyarrow>=15.0
 
 # Dev/Testing
 pytest==8.3.4
