@@ -71,13 +71,12 @@ class BacktestConfig:
     initial_capital: float = 100_000.0
     commission_per_trade: float = 0.0       # Alpaca is commission-free
     slippage_pct: float = 0.05              # 5 bps slippage per trade
-    max_positions: int = 1                   # Single position for simplicity
     use_kelly: bool = True                   # Kelly criterion sizing
     kelly_fraction: float = 0.5             # Half-Kelly
     max_position_pct: float = 0.25          # Max 25% in one trade
     default_stop_loss_pct: float = 2.0
     default_take_profit_pct: float = 4.0     # 2:1 R:R
-    max_holding_bars: int = 20              # Triple barrier vertical: max bars before force exit
+    max_holding_bars: int = 40              # Triple barrier vertical: max bars before force exit
     use_risk_manager: bool = True
     min_trades_per_window: int = 5           # Reject thin results
     use_atr_barriers: bool = True           # Use ATR-based stops instead of fixed signal stops
@@ -86,6 +85,12 @@ class BacktestConfig:
     atr_target_mult: float = 3.0            # Target at 3x ATR (1.5:1 R:R)
     use_meta_labeling: bool = True           # Use meta-labeler for signal filtering
     meta_label_threshold: float = 0.55       # Min P(correct) to trade
+    use_trailing_stop: bool = True           # Trail stop as price moves in favor
+    trailing_stop_atr_mult: float = 2.5      # Trail at 2.5x ATR behind best price (chandelier exit)
+    max_positions: int = 3                   # Allow up to 3 concurrent positions
+    partial_exit_enabled: bool = True        # Scale out of winners in 2 tranches
+    partial_exit_pct: float = 50.0           # Exit 50% of position at first target
+    partial_exit_atr_mult: float = 2.0       # Take partial profit at 2x ATR
 
 
 @dataclass
@@ -161,12 +166,12 @@ def run_backtest(
     """
     Run a single backtest of a strategy on historical data.
 
-    Bar-by-bar event loop:
+    Bar-by-bar event loop with trailing stops and multi-position support:
     1. Strategy generates signals upfront
     2. Engine iterates through EVERY bar (not just signal bars)
-    3. On each bar: check stops/targets, process any signal, track equity
-    4. Equity includes unrealized P&L of open positions
-    5. This gives an accurate equity curve for drawdown and CAGR calculation
+    3. On each bar: trail stops, check stops/targets, process signals, track equity
+    4. Equity includes unrealized P&L of ALL open positions
+    5. Trailing stops ratchet up as price moves in favor (never down)
 
     Returns a BacktestResult with full performance report.
     """
@@ -187,7 +192,7 @@ def run_backtest(
 
     # Initialize state
     cash = config.initial_capital
-    position: dict | None = None
+    positions: list[dict] = []  # Support multiple concurrent positions
     trades: list[Trade] = []
     equity_values = []
     equity_times = []
@@ -199,16 +204,52 @@ def run_backtest(
         max_position_pct=config.max_position_pct,
     ) if config.use_kelly else None
 
+    def _record_meta_outcome(pos: dict, won: bool):
+        if meta_labeler is not None:
+            try:
+                from src.backtesting.meta_labeling import extract_meta_features
+                features = extract_meta_features(df, pos["entry_bar"])
+                meta_labeler.record_outcome(features, won)
+            except Exception:
+                pass
+
     # ── Bar-by-bar loop ──
     for i in range(len(df)):
         bar = df.iloc[i]
         price = bar["close"]
         timestamp = str(df.index[i])
 
-        # ── 1. Check stops / targets on EVERY bar ──
-        if position is not None:
+        # ── 1. Check stops / targets / trailing stops on EVERY bar for ALL positions ──
+        closed_indices = []
+        for pidx, position in enumerate(positions):
             hit_stop = False
             hit_target = False
+
+            # ── Trailing stop: ratchet stop in favor direction ──
+            if config.use_trailing_stop and position.get("trailing_active", False):
+                if position["side"] == Side.LONG:
+                    # Track highest price since entry
+                    position["best_price"] = max(position.get("best_price", position["entry_price"]), bar["high"])
+                    # Trail stop = best_price - trailing_distance
+                    new_stop = position["best_price"] - position["trailing_distance"]
+                    if new_stop > position["stop_price"]:
+                        position["stop_price"] = new_stop
+                else:
+                    # Track lowest price since entry
+                    position["best_price"] = min(position.get("best_price", position["entry_price"]), bar["low"])
+                    new_stop = position["best_price"] + position["trailing_distance"]
+                    if new_stop < position["stop_price"]:
+                        position["stop_price"] = new_stop
+
+            # Activate trailing stop once price moves 1 ATR in favor
+            if config.use_trailing_stop and not position.get("trailing_active", False):
+                if position["side"] == Side.LONG:
+                    unrealized_pct = (bar["high"] - position["entry_price"]) / position["entry_price"]
+                else:
+                    unrealized_pct = (position["entry_price"] - bar["low"]) / position["entry_price"]
+                if unrealized_pct > position.get("atr_pct", 0.02):
+                    position["trailing_active"] = True
+                    position["best_price"] = bar["high"] if position["side"] == Side.LONG else bar["low"]
 
             if position["side"] == Side.LONG:
                 hit_stop = bar["low"] <= position["stop_price"]
@@ -218,39 +259,56 @@ def run_backtest(
                 hit_target = (not hit_stop) and bar["low"] <= position["target_price"]
 
             if hit_stop:
+                exit_reason = "trailing_stop" if position.get("trailing_active", False) else "stop_loss"
                 trade, pnl_dollars = _close_position(
-                    position, position["stop_price"], i, timestamp, "stop_loss", config.slippage_pct,
+                    position, position["stop_price"], i, timestamp, exit_reason, config.slippage_pct,
                 )
                 trades.append(trade)
                 cash += pnl_dollars
-                risk_manager.update_state(cash, last_trade_won=False)
-                if meta_labeler is not None:
-                    try:
-                        from src.backtesting.meta_labeling import extract_meta_features
-                        features = extract_meta_features(df, position["entry_bar"])
-                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
-                    except Exception:
-                        pass
-                position = None
+                risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
+                _record_meta_outcome(position, trade.pnl_pct > 0)
+                closed_indices.append(pidx)
 
             elif hit_target:
-                trade, pnl_dollars = _close_position(
-                    position, position["target_price"], i, timestamp, "take_profit", config.slippage_pct,
-                )
-                trades.append(trade)
-                cash += pnl_dollars
-                risk_manager.update_state(cash, last_trade_won=True)
-                if meta_labeler is not None:
-                    try:
-                        from src.backtesting.meta_labeling import extract_meta_features
-                        features = extract_meta_features(df, position["entry_bar"])
-                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
-                    except Exception:
-                        pass
-                position = None
+                # Partial exit: close part of position, let rest ride with trailing stop
+                if (config.partial_exit_enabled
+                        and not position.get("partial_taken", False)
+                        and position["shares"] > 1):
+                    # Take partial profit on first target hit
+                    partial_shares = max(1, int(position["shares"] * config.partial_exit_pct / 100))
+                    remaining_shares = position["shares"] - partial_shares
+
+                    # Create a partial trade record
+                    partial_pos = dict(position)
+                    partial_pos["size_dollars"] = partial_shares * position["entry_price"]
+                    partial_pos["shares"] = partial_shares
+                    trade, pnl_dollars = _close_position(
+                        partial_pos, position["target_price"], i, timestamp,
+                        "partial_take_profit", config.slippage_pct,
+                    )
+                    trades.append(trade)
+                    cash += pnl_dollars
+
+                    # Update remaining position: move stop to breakeven, widen target, activate trailing
+                    position["shares"] = remaining_shares
+                    position["size_dollars"] = remaining_shares * position["entry_price"]
+                    position["stop_price"] = position["entry_price"]  # Move stop to breakeven
+                    position["target_price"] = position["target_price"] * 1.5  # Widen target 50%
+                    position["partial_taken"] = True
+                    position["trailing_active"] = True  # Force trailing stop on remainder
+                    position["best_price"] = bar["high"] if position["side"] == Side.LONG else bar["low"]
+                else:
+                    trade, pnl_dollars = _close_position(
+                        position, position["target_price"], i, timestamp, "take_profit", config.slippage_pct,
+                    )
+                    trades.append(trade)
+                    cash += pnl_dollars
+                    risk_manager.update_state(cash, last_trade_won=True)
+                    _record_meta_outcome(position, trade.pnl_pct > 0)
+                    closed_indices.append(pidx)
 
             # Triple barrier vertical: force exit after max_holding_bars
-            elif config.max_holding_bars > 0 and position is not None:
+            elif config.max_holding_bars > 0:
                 bars_held = i - position["entry_bar"]
                 if bars_held >= config.max_holding_bars:
                     trade, pnl_dollars = _close_position(
@@ -259,38 +317,34 @@ def run_backtest(
                     trades.append(trade)
                     cash += pnl_dollars
                     risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
-                    if meta_labeler is not None:
-                        try:
-                            from src.backtesting.meta_labeling import extract_meta_features
-                            features = extract_meta_features(df, position["entry_bar"])
-                            meta_labeler.record_outcome(features, trade.pnl_pct > 0)
-                        except Exception:
-                            pass
-                    position = None
+                    _record_meta_outcome(position, trade.pnl_pct > 0)
+                    closed_indices.append(pidx)
+
+        # Remove closed positions (iterate in reverse to preserve indices)
+        for pidx in sorted(closed_indices, reverse=True):
+            positions.pop(pidx)
 
         # ── 2. Process signal if one exists on this bar ──
         signal = signal_map.get(i)
         if signal is not None and signal.side != Side.FLAT:
 
-            # Close opposite position first
-            if position is not None and signal.side != position["side"]:
-                trade, pnl_dollars = _close_position(
-                    position, price, i, timestamp, "signal", config.slippage_pct,
-                )
-                trades.append(trade)
-                cash += pnl_dollars
-                risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
-                if meta_labeler is not None:
-                    try:
-                        from src.backtesting.meta_labeling import extract_meta_features
-                        features = extract_meta_features(df, position["entry_bar"])
-                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
-                    except Exception:
-                        pass
-                position = None
+            # Close any opposite-side positions first
+            opposite_indices = []
+            for pidx, position in enumerate(positions):
+                if signal.side != position["side"]:
+                    trade, pnl_dollars = _close_position(
+                        position, price, i, timestamp, "signal", config.slippage_pct,
+                    )
+                    trades.append(trade)
+                    cash += pnl_dollars
+                    risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
+                    _record_meta_outcome(position, trade.pnl_pct > 0)
+                    opposite_indices.append(pidx)
+            for pidx in sorted(opposite_indices, reverse=True):
+                positions.pop(pidx)
 
-            # Open new position if flat
-            if position is None:
+            # Open new position if under max_positions limit
+            if len(positions) < config.max_positions:
                 # Risk check
                 size_mult = 1.0
                 blocked = False
@@ -323,16 +377,18 @@ def run_backtest(
                         pass  # Don't crash if meta-labeling fails
 
                 if not blocked and size_mult > 0:
-                    # Position sizing
+                    # Position sizing — scale down per position when multi-position
+                    position_scale = 1.0 / max(1, config.max_positions)
                     if kelly and len(trades) >= 10:
                         recent_pnls = pd.Series([t.pnl_pct / 100 for t in trades[-50:]])
                         ps = kelly.from_returns(recent_pnls, cash, price)
                     else:
+                        frac = config.max_position_pct * 0.5 * position_scale
                         ps = PositionSize(
-                            fraction=config.max_position_pct * 0.5,
-                            shares=int(cash * config.max_position_pct * 0.5 / price) if price > 0 else 0,
-                            dollar_amount=cash * config.max_position_pct * 0.5,
-                            risk_amount=cash * config.max_position_pct * 0.5 * (signal.stop_loss_pct / 100),
+                            fraction=frac,
+                            shares=int(cash * frac / price) if price > 0 else 0,
+                            dollar_amount=cash * frac,
+                            risk_amount=cash * frac * (signal.stop_loss_pct / 100),
                             method="fixed_fractional",
                             kelly_raw=0,
                             confidence=0.5,
@@ -343,6 +399,7 @@ def run_backtest(
 
                     if actual_shares > 0:
                         # ATR-based dynamic barriers (override signal's fixed stops)
+                        atr_pct_val = 0.02  # default fallback
                         if config.use_atr_barriers and i >= config.atr_period + 1:
                             atr_val = compute_atr(
                                 df["high"].values[:i+1],
@@ -351,7 +408,8 @@ def run_backtest(
                                 period=config.atr_period,
                             )
                             if atr_val > 0:
-                                atr_pct = atr_val / price * 100
+                                atr_pct_val = atr_val / price
+                                atr_pct = atr_pct_val * 100
                                 # ATR-based stops override signal defaults
                                 effective_stop = atr_pct * config.atr_stop_mult
                                 effective_target = atr_pct * config.atr_target_mult
@@ -367,14 +425,16 @@ def run_backtest(
                             entry_price = price * (1 + slippage)
                             stop_price = entry_price * (1 - effective_stop / 100)
                             target_price = entry_price * (1 + effective_target / 100)
+                            trailing_dist = atr_pct_val * config.trailing_stop_atr_mult * entry_price
                         else:
                             entry_price = price * (1 - slippage)
                             stop_price = entry_price * (1 + effective_stop / 100)
                             target_price = entry_price * (1 - effective_target / 100)
+                            trailing_dist = atr_pct_val * config.trailing_stop_atr_mult * entry_price
 
                         cash -= config.commission_per_trade
 
-                        position = {
+                        new_position = {
                             "side": signal.side,
                             "entry_price": entry_price,
                             "entry_bar": i,
@@ -385,33 +445,33 @@ def run_backtest(
                             "stop_price": stop_price,
                             "target_price": target_price,
                             "confidence": signal.confidence,
+                            "trailing_active": False,
+                            "trailing_distance": trailing_dist,
+                            "best_price": entry_price,
+                            "atr_pct": atr_pct_val,
                         }
+                        positions.append(new_position)
 
         # ── 3. Record equity = cash + unrealized position value ──
-        if position is not None:
-            total_equity = cash + _unrealized_pnl(position, price)
-        else:
-            total_equity = cash
+        total_equity = cash
+        for position in positions:
+            total_equity += _unrealized_pnl(position, price)
 
         equity_values.append(total_equity)
         equity_times.append(df.index[i])
 
-    # Close any remaining position at last bar
-    if position is not None and len(df) > 0:
+    # Close any remaining positions at last bar
+    if positions and len(df) > 0:
         last_price = df.iloc[-1]["close"]
-        trade, pnl_dollars = _close_position(
-            position, last_price, len(df) - 1, str(df.index[-1]), "end_of_data", config.slippage_pct,
-        )
-        trades.append(trade)
-        cash += pnl_dollars
-        if meta_labeler is not None:
-            try:
-                from src.backtesting.meta_labeling import extract_meta_features
-                features = extract_meta_features(df, position["entry_bar"])
-                meta_labeler.record_outcome(features, trade.pnl_pct > 0)
-            except Exception:
-                pass
-        # Update last equity point to reflect closed position
+        for position in positions:
+            trade, pnl_dollars = _close_position(
+                position, last_price, len(df) - 1, str(df.index[-1]), "end_of_data", config.slippage_pct,
+            )
+            trades.append(trade)
+            cash += pnl_dollars
+            _record_meta_outcome(position, trade.pnl_pct > 0)
+        positions.clear()
+        # Update last equity point to reflect closed positions
         if equity_values:
             equity_values[-1] = cash
 
