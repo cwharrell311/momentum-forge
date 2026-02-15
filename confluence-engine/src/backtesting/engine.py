@@ -97,6 +97,50 @@ class BacktestResult:
     window_type: str            # "full", "in_sample", "out_of_sample"
 
 
+def _close_position(
+    position: dict,
+    exit_price: float,
+    exit_bar: int,
+    exit_time: str,
+    exit_reason: str,
+    slippage_pct: float,
+) -> tuple[Trade, float]:
+    """Close a position and return the Trade + realized P&L in dollars."""
+    slip = slippage_pct / 100
+    if position["side"] == Side.LONG:
+        adj_price = exit_price * (1 - slip)
+        pnl_pct = (adj_price - position["entry_price"]) / position["entry_price"] * 100
+    else:
+        adj_price = exit_price * (1 + slip)
+        pnl_pct = (position["entry_price"] - adj_price) / position["entry_price"] * 100
+
+    pnl_dollars = pnl_pct / 100 * position["size_dollars"]
+    trade = Trade(
+        entry_bar=position["entry_bar"],
+        exit_bar=exit_bar,
+        entry_price=position["entry_price"],
+        exit_price=adj_price,
+        side=position["side"],
+        pnl_pct=pnl_pct,
+        pnl_dollars=pnl_dollars,
+        position_size=position["size_frac"],
+        bars_held=exit_bar - position["entry_bar"],
+        entry_time=position["entry_time"],
+        exit_time=exit_time,
+        signal_confidence=position["confidence"],
+        exit_reason=exit_reason,
+    )
+    return trade, pnl_dollars
+
+
+def _unrealized_pnl(position: dict, current_price: float) -> float:
+    """Compute unrealized P&L dollars for an open position."""
+    if position["side"] == Side.LONG:
+        return (current_price - position["entry_price"]) / position["entry_price"] * position["size_dollars"]
+    else:
+        return (position["entry_price"] - current_price) / position["entry_price"] * position["size_dollars"]
+
+
 def run_backtest(
     strategy: BaseStrategy,
     df: pd.DataFrame,
@@ -108,12 +152,12 @@ def run_backtest(
     """
     Run a single backtest of a strategy on historical data.
 
-    This is the event-driven backtester:
-    1. Strategy generates signals from the data
-    2. Risk manager filters signals
-    3. Position sizer determines size
-    4. Simulator executes trades with slippage/commission
-    5. Equity curve and metrics are computed
+    Bar-by-bar event loop:
+    1. Strategy generates signals upfront
+    2. Engine iterates through EVERY bar (not just signal bars)
+    3. On each bar: check stops/targets, process any signal, track equity
+    4. Equity includes unrealized P&L of open positions
+    5. This gives an accurate equity curve for drawdown and CAGR calculation
 
     Returns a BacktestResult with full performance report.
     """
@@ -124,17 +168,20 @@ def run_backtest(
 
     meta = strategy.meta()
 
-    # Generate all signals
+    # Generate all signals upfront and index by bar number
     signals = strategy.generate_signals(df)
     total_signals = len(signals)
+    signal_map: dict[int, Signal] = {}
+    for sig in signals:
+        if sig.bar_index not in signal_map:
+            signal_map[sig.bar_index] = sig
 
     # Initialize state
-    capital = config.initial_capital
-    equity = capital
-    position: dict | None = None  # {side, entry_price, entry_bar, size, stop, target}
+    cash = config.initial_capital
+    position: dict | None = None
     trades: list[Trade] = []
-    equity_values = [capital]
-    equity_times = [df.index[0]]
+    equity_values = []
+    equity_times = []
     blocked_signals = 0
 
     # Kelly sizer
@@ -143,216 +190,142 @@ def run_backtest(
         max_position_pct=config.max_position_pct,
     ) if config.use_kelly else None
 
-    # Process signals chronologically
-    for signal in signals:
-        i = signal.bar_index
-        if i >= len(df):
-            continue
-
+    # ── Bar-by-bar loop ──
+    for i in range(len(df)):
         bar = df.iloc[i]
         price = bar["close"]
         timestamp = str(df.index[i])
 
-        # Check for stop loss / take profit on existing position
+        # ── 1. Check stops / targets on EVERY bar ──
         if position is not None:
-            # Check stop loss
+            hit_stop = False
+            hit_target = False
+
             if position["side"] == Side.LONG:
-                if bar["low"] <= position["stop_price"]:
-                    exit_price = position["stop_price"] * (1 - config.slippage_pct / 100)
-                    pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"] * 100
-                    pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-                    trades.append(Trade(
-                        entry_bar=position["entry_bar"], exit_bar=i,
-                        entry_price=position["entry_price"], exit_price=exit_price,
-                        side=Side.LONG, pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-                        position_size=position["size_frac"], bars_held=i - position["entry_bar"],
-                        entry_time=position["entry_time"], exit_time=timestamp,
-                        signal_confidence=position["confidence"], exit_reason="stop_loss",
-                    ))
-                    equity += pnl_dollars
-                    risk_manager.update_state(equity, last_trade_won=False)
-                    position = None
-
-                elif bar["high"] >= position["target_price"]:
-                    exit_price = position["target_price"] * (1 - config.slippage_pct / 100)
-                    pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"] * 100
-                    pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-                    trades.append(Trade(
-                        entry_bar=position["entry_bar"], exit_bar=i,
-                        entry_price=position["entry_price"], exit_price=exit_price,
-                        side=Side.LONG, pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-                        position_size=position["size_frac"], bars_held=i - position["entry_bar"],
-                        entry_time=position["entry_time"], exit_time=timestamp,
-                        signal_confidence=position["confidence"], exit_reason="take_profit",
-                    ))
-                    equity += pnl_dollars
-                    risk_manager.update_state(equity, last_trade_won=True)
-                    position = None
-
-            elif position["side"] == Side.SHORT:
-                if bar["high"] >= position["stop_price"]:
-                    exit_price = position["stop_price"] * (1 + config.slippage_pct / 100)
-                    pnl_pct = (position["entry_price"] - exit_price) / position["entry_price"] * 100
-                    pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-                    trades.append(Trade(
-                        entry_bar=position["entry_bar"], exit_bar=i,
-                        entry_price=position["entry_price"], exit_price=exit_price,
-                        side=Side.SHORT, pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-                        position_size=position["size_frac"], bars_held=i - position["entry_bar"],
-                        entry_time=position["entry_time"], exit_time=timestamp,
-                        signal_confidence=position["confidence"], exit_reason="stop_loss",
-                    ))
-                    equity += pnl_dollars
-                    risk_manager.update_state(equity, last_trade_won=False)
-                    position = None
-
-                elif bar["low"] <= position["target_price"]:
-                    exit_price = position["target_price"] * (1 + config.slippage_pct / 100)
-                    pnl_pct = (position["entry_price"] - exit_price) / position["entry_price"] * 100
-                    pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-                    trades.append(Trade(
-                        entry_bar=position["entry_bar"], exit_bar=i,
-                        entry_price=position["entry_price"], exit_price=exit_price,
-                        side=Side.SHORT, pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-                        position_size=position["size_frac"], bars_held=i - position["entry_bar"],
-                        entry_time=position["entry_time"], exit_time=timestamp,
-                        signal_confidence=position["confidence"], exit_reason="take_profit",
-                    ))
-                    equity += pnl_dollars
-                    risk_manager.update_state(equity, last_trade_won=True)
-                    position = None
-
-        # Skip if we already have a position (no stacking)
-        if position is not None:
-            # Close on opposite signal
-            if signal.side != position["side"]:
-                exit_price = price * (1 + config.slippage_pct / 100 * (-1 if position["side"] == Side.LONG else 1))
-                if position["side"] == Side.LONG:
-                    pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"] * 100
-                else:
-                    pnl_pct = (position["entry_price"] - exit_price) / position["entry_price"] * 100
-                pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-                trades.append(Trade(
-                    entry_bar=position["entry_bar"], exit_bar=i,
-                    entry_price=position["entry_price"], exit_price=exit_price,
-                    side=position["side"], pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-                    position_size=position["size_frac"], bars_held=i - position["entry_bar"],
-                    entry_time=position["entry_time"], exit_time=timestamp,
-                    signal_confidence=position["confidence"], exit_reason="signal",
-                ))
-                equity += pnl_dollars
-                risk_manager.update_state(equity, last_trade_won=(pnl_pct > 0))
-                position = None
+                hit_stop = bar["low"] <= position["stop_price"]
+                hit_target = (not hit_stop) and bar["high"] >= position["target_price"]
             else:
-                equity_values.append(equity)
-                equity_times.append(df.index[i])
-                continue
+                hit_stop = bar["high"] >= position["stop_price"]
+                hit_target = (not hit_stop) and bar["low"] <= position["target_price"]
 
-        if signal.side == Side.FLAT:
-            equity_values.append(equity)
-            equity_times.append(df.index[i])
-            continue
+            if hit_stop:
+                trade, pnl_dollars = _close_position(
+                    position, position["stop_price"], i, timestamp, "stop_loss", config.slippage_pct,
+                )
+                trades.append(trade)
+                cash += pnl_dollars
+                risk_manager.update_state(cash, last_trade_won=False)
+                position = None
 
-        # Risk check
-        if config.use_risk_manager:
-            returns_hist = compute_returns(pd.Series(equity_values)) if len(equity_values) > 20 else None
-            decision = risk_manager.check_trade(
-                symbol=symbol,
-                returns_history=returns_hist,
-                asset_class=asset_class,
-            )
-            if decision.action in (RiskAction.BLOCK, RiskAction.HALT):
-                blocked_signals += 1
-                equity_values.append(equity)
-                equity_times.append(df.index[i])
-                continue
-            size_mult = decision.size_multiplier
+            elif hit_target:
+                trade, pnl_dollars = _close_position(
+                    position, position["target_price"], i, timestamp, "take_profit", config.slippage_pct,
+                )
+                trades.append(trade)
+                cash += pnl_dollars
+                risk_manager.update_state(cash, last_trade_won=True)
+                position = None
+
+        # ── 2. Process signal if one exists on this bar ──
+        signal = signal_map.get(i)
+        if signal is not None and signal.side != Side.FLAT:
+
+            # Close opposite position first
+            if position is not None and signal.side != position["side"]:
+                trade, pnl_dollars = _close_position(
+                    position, price, i, timestamp, "signal", config.slippage_pct,
+                )
+                trades.append(trade)
+                cash += pnl_dollars
+                risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
+                position = None
+
+            # Open new position if flat
+            if position is None:
+                # Risk check
+                size_mult = 1.0
+                blocked = False
+                if config.use_risk_manager:
+                    returns_hist = compute_returns(pd.Series(equity_values)) if len(equity_values) > 20 else None
+                    decision = risk_manager.check_trade(
+                        symbol=symbol,
+                        returns_history=returns_hist,
+                        asset_class=asset_class,
+                    )
+                    if decision.action in (RiskAction.BLOCK, RiskAction.HALT):
+                        blocked_signals += 1
+                        blocked = True
+                    else:
+                        size_mult = decision.size_multiplier
+
+                if not blocked and size_mult > 0:
+                    # Position sizing
+                    if kelly and len(trades) >= 10:
+                        recent_pnls = pd.Series([t.pnl_pct / 100 for t in trades[-50:]])
+                        ps = kelly.from_returns(recent_pnls, cash, price)
+                    else:
+                        ps = PositionSize(
+                            fraction=config.max_position_pct * 0.5,
+                            shares=int(cash * config.max_position_pct * 0.5 / price) if price > 0 else 0,
+                            dollar_amount=cash * config.max_position_pct * 0.5,
+                            risk_amount=cash * config.max_position_pct * 0.5 * (signal.stop_loss_pct / 100),
+                            method="fixed_fractional",
+                            kelly_raw=0,
+                            confidence=0.5,
+                        )
+
+                    actual_size = ps.dollar_amount * size_mult
+                    actual_shares = int(actual_size / price) if price > 0 else 0
+
+                    if actual_shares > 0:
+                        slippage = config.slippage_pct / 100
+                        if signal.side == Side.LONG:
+                            entry_price = price * (1 + slippage)
+                            stop_price = entry_price * (1 - signal.stop_loss_pct / 100)
+                            target_price = entry_price * (1 + signal.take_profit_pct / 100)
+                        else:
+                            entry_price = price * (1 - slippage)
+                            stop_price = entry_price * (1 + signal.stop_loss_pct / 100)
+                            target_price = entry_price * (1 - signal.take_profit_pct / 100)
+
+                        cash -= config.commission_per_trade
+
+                        position = {
+                            "side": signal.side,
+                            "entry_price": entry_price,
+                            "entry_bar": i,
+                            "entry_time": timestamp,
+                            "size_dollars": actual_shares * entry_price,
+                            "size_frac": actual_shares * entry_price / cash if cash > 0 else 0,
+                            "shares": actual_shares,
+                            "stop_price": stop_price,
+                            "target_price": target_price,
+                            "confidence": signal.confidence,
+                        }
+
+        # ── 3. Record equity = cash + unrealized position value ──
+        if position is not None:
+            total_equity = cash + _unrealized_pnl(position, price)
         else:
-            size_mult = 1.0
+            total_equity = cash
 
-        # Position sizing
-        if kelly and len(trades) >= 10:
-            recent_pnls = pd.Series([t.pnl_pct / 100 for t in trades[-50:]])
-            ps = kelly.from_returns(recent_pnls, equity, price)
-        else:
-            # Fixed fractional before we have enough trades for Kelly
-            ps = PositionSize(
-                fraction=config.max_position_pct * 0.5,
-                shares=int(equity * config.max_position_pct * 0.5 / price) if price > 0 else 0,
-                dollar_amount=equity * config.max_position_pct * 0.5,
-                risk_amount=equity * config.max_position_pct * 0.5 * (signal.stop_loss_pct / 100),
-                method="fixed_fractional",
-                kelly_raw=0,
-                confidence=0.5,
-            )
-
-        if ps.shares <= 0:
-            equity_values.append(equity)
-            equity_times.append(df.index[i])
-            continue
-
-        # Apply risk scaling
-        actual_size = ps.dollar_amount * size_mult
-        actual_shares = int(actual_size / price) if price > 0 else 0
-        if actual_shares <= 0:
-            equity_values.append(equity)
-            equity_times.append(df.index[i])
-            continue
-
-        # Entry with slippage
-        slippage = config.slippage_pct / 100
-        if signal.side == Side.LONG:
-            entry_price = price * (1 + slippage)
-            stop_price = entry_price * (1 - signal.stop_loss_pct / 100)
-            target_price = entry_price * (1 + signal.take_profit_pct / 100)
-        else:
-            entry_price = price * (1 - slippage)
-            stop_price = entry_price * (1 + signal.stop_loss_pct / 100)
-            target_price = entry_price * (1 - signal.take_profit_pct / 100)
-
-        # Commission
-        equity -= config.commission_per_trade
-
-        position = {
-            "side": signal.side,
-            "entry_price": entry_price,
-            "entry_bar": i,
-            "entry_time": timestamp,
-            "size_dollars": actual_shares * entry_price,
-            "size_frac": actual_shares * entry_price / equity if equity > 0 else 0,
-            "shares": actual_shares,
-            "stop_price": stop_price,
-            "target_price": target_price,
-            "confidence": signal.confidence,
-        }
-
-        equity_values.append(equity)
+        equity_values.append(total_equity)
         equity_times.append(df.index[i])
 
     # Close any remaining position at last bar
     if position is not None and len(df) > 0:
-        last = df.iloc[-1]
-        price = last["close"]
-        if position["side"] == Side.LONG:
-            pnl_pct = (price - position["entry_price"]) / position["entry_price"] * 100
-        else:
-            pnl_pct = (position["entry_price"] - price) / position["entry_price"] * 100
-        pnl_dollars = pnl_pct / 100 * position["size_dollars"]
-        trades.append(Trade(
-            entry_bar=position["entry_bar"], exit_bar=len(df) - 1,
-            entry_price=position["entry_price"], exit_price=price,
-            side=position["side"], pnl_pct=pnl_pct, pnl_dollars=pnl_dollars,
-            position_size=position["size_frac"], bars_held=len(df) - 1 - position["entry_bar"],
-            entry_time=position["entry_time"], exit_time=str(df.index[-1]),
-            signal_confidence=position["confidence"], exit_reason="end_of_data",
-        ))
-        equity += pnl_dollars
+        last_price = df.iloc[-1]["close"]
+        trade, pnl_dollars = _close_position(
+            position, last_price, len(df) - 1, str(df.index[-1]), "end_of_data", config.slippage_pct,
+        )
+        trades.append(trade)
+        cash += pnl_dollars
+        # Update last equity point to reflect closed position
+        if equity_values:
+            equity_values[-1] = cash
 
-    equity_values.append(equity)
-    equity_times.append(df.index[-1] if len(df) > 0 else pd.Timestamp.now(tz="UTC"))
-
-    # Build equity curve
-    equity_series = pd.Series(equity_values, index=equity_times)
+    # Build equity curve (one point per bar — proper time basis)
+    equity_series = pd.Series(equity_values, index=equity_times) if equity_values else pd.Series([config.initial_capital])
 
     # Generate performance report
     trade_pnls = [t.pnl_pct for t in trades]
