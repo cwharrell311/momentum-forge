@@ -19,7 +19,7 @@ on:
       crypto:
         description: "Crypto pairs (space-separated)"
         required: false
-        default: "BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT"
+        default: "BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT LINK/USDT DOT/USDT MATIC/USDT"
         type: string
       period:
         description: "Stock data period"
@@ -49,6 +49,7 @@ on:
         options:
           - "basic"
           - "walk-forward"
+          - "cpcv"
           - "optimize"
       capital:
         description: "Starting capital ($)"
@@ -94,6 +95,8 @@ jobs:
 
           if [ "$MODE" = "walk-forward" ]; then
             ARGS="$ARGS --walk-forward --windows 5"
+          elif [ "$MODE" = "cpcv" ]; then
+            ARGS="$ARGS --cpcv"
           elif [ "$MODE" = "optimize" ]; then
             ARGS="$ARGS --optimize"
           fi
@@ -168,7 +171,7 @@ jobs:
 
       - name: Run crypto backtest
         run: |
-          CRYPTO="${{ inputs.crypto || 'BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT' }}"
+          CRYPTO="${{ inputs.crypto || 'BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT LINK/USDT DOT/USDT MATIC/USDT' }}"
           DAYS="${{ inputs.crypto_days || '1825' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"
@@ -177,6 +180,8 @@ jobs:
 
           if [ "$MODE" = "walk-forward" ]; then
             ARGS="$ARGS --walk-forward"
+          elif [ "$MODE" = "cpcv" ]; then
+            ARGS="$ARGS --cpcv"
           elif [ "$MODE" = "optimize" ]; then
             ARGS="$ARGS --optimize"
           fi
@@ -313,13 +318,15 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
 
             echo "### Top 5 Strategies" >> $GITHUB_STEP_SUMMARY
-            echo "| Rank | Strategy | Symbol | Asset | Sharpe | CAGR | Max DD |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|----------|--------|-------|--------|------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Rank | Strategy | Symbol | Asset | Sharpe | CAGR | Max DD | P(Overfit) | Deflated SR |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|----------|--------|-------|--------|------|--------|------------|-------------|" >> $GITHUB_STEP_SUMMARY
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           import json
           data = json.load(open('combined-report.json'))
           for i, r in enumerate(data.get('top_5', []), 1):
-              print(f"| {i} | {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('asset_class','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} |")
+              overfit = r.get('prob_overfit', 'N/A')
+              dsr = r.get('deflated_sharpe', r.get('deflated_sharpe', 'N/A'))
+              print(f"| {i} | {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('asset_class','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {overfit} | {dsr} |")
           PYEOF
           else
             echo "No results files found." >> $GITHUB_STEP_SUMMARY

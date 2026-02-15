@@ -50,6 +50,10 @@ from src.backtesting.engine import (
     run_backtest,
     walk_forward_analysis,
     WalkForwardResult,
+    cpcv_analysis,
+    CPCVResult,
+    compute_sharpe_weights,
+    StrategyAllocation,
 )
 from src.backtesting.genetic_optimizer import GeneticConfig, optimize
 from src.backtesting.ai_analyst import evaluate_strategies, format_report_for_display
@@ -63,7 +67,6 @@ from src.backtesting.strategies import (
     OpeningRangeBreakout,
     PredictionMomentum,
     PredictionReversion,
-    VWAPReversion,
 )
 from src.backtesting.risk_management import RiskManager
 
@@ -81,8 +84,9 @@ def print_banner():
 ║              MOMENTUM FORGE — BACKTESTING ENGINE             ║
 ║         Research-Grade Multi-Asset Strategy Testing           ║
 ║                                                              ║
-║  Walk-Forward Analysis · Kelly Criterion · Genetic Optimizer ║
-║  Stocks · Crypto · Prediction Markets · AI Evaluation        ║
+║  CPCV · Walk-Forward · Triple Barrier · Kelly Criterion      ║
+║  Regime Filter · Sharpe-Weighted Sizing · Deflated Sharpe    ║
+║  Stocks · Crypto · Prediction Markets · Genetic Optimizer    ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
 
@@ -94,13 +98,16 @@ def run_stock_backtest(
     config: BacktestConfig | None = None,
     walk_forward: bool = False,
     wf_windows: int = 5,
+    use_cpcv: bool = False,
 ) -> list[dict]:
     """Run backtest on stock symbols."""
     if config is None:
         config = BacktestConfig()
 
     results = []
+    bt_results = []  # Keep BacktestResult objects for Sharpe weighting
     strategies = get_all_strategies("stock")
+    total_combos = len(symbols) * len(strategies)
 
     for symbol in symbols:
         print(f"\n{'─' * 50}")
@@ -119,32 +126,71 @@ def run_stock_backtest(
             print(f"  Testing: {meta.name}...", end=" ", flush=True)
 
             try:
-                if walk_forward:
+                if use_cpcv:
+                    cpcv = cpcv_analysis(
+                        strategy, data.df, symbol, "stock", config,
+                        num_groups=6, test_groups=2, purge_bars=5,
+                    )
+                    summary = {
+                        "strategy": meta.name,
+                        "symbol": symbol,
+                        "asset_class": "stock",
+                        "sharpe": f"{cpcv.mean_sharpe:.2f}",
+                        "cagr": f"{cpcv.mean_cagr:+.2f}%",
+                        "max_drawdown": f"{cpcv.mean_max_dd:.2f}%",
+                        "prob_overfit": f"{cpcv.prob_overfit:.1%}",
+                        "prob_sharpe_pos": f"{cpcv.prob_sharpe_positive:.1%}",
+                        "deflated_sharpe": f"{cpcv.deflated_sharpe:.2f}",
+                        "cpcv_paths": cpcv.num_paths,
+                        "total_trades": "N/A",
+                        "win_rate": "N/A",
+                    }
+                    results.append(summary)
+                    print(f"CPCV mean_sharpe={cpcv.mean_sharpe:.2f} P(overfit)={cpcv.prob_overfit:.1%} paths={cpcv.num_paths}")
+
+                elif walk_forward:
                     wf = walk_forward_analysis(
                         strategy, data.df, symbol, "stock", config,
                         num_windows=wf_windows,
                     )
                     report = wf.combined_oos_report
-                    extra = {"wf_efficiency": f"{wf.wf_efficiency:.3f}"}
+                    summary = report.summary()
+                    summary["strategy"] = meta.name
+                    summary["symbol"] = symbol
+                    summary["asset_class"] = "stock"
+                    summary["wf_efficiency"] = f"{wf.wf_efficiency:.3f}"
+                    results.append(summary)
+
+                    if report.is_viable:
+                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}% DD={report.drawdown.max_drawdown_pct:.1f}%")
+                    else:
+                        print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
+
                 else:
-                    bt = run_backtest(strategy, data.df, symbol, "stock", config)
+                    bt = run_backtest(strategy, data.df, symbol, "stock", config, num_trials=total_combos)
+                    bt_results.append(bt)
                     report = bt.report
-                    extra = {}
+                    summary = report.summary()
+                    summary["strategy"] = meta.name
+                    summary["symbol"] = symbol
+                    summary["asset_class"] = "stock"
+                    results.append(summary)
 
-                summary = report.summary()
-                summary["strategy"] = meta.name
-                summary["symbol"] = symbol
-                summary["asset_class"] = "stock"
-                summary.update(extra)
-                results.append(summary)
-
-                if report.is_viable:
-                    print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}% DD={report.drawdown.max_drawdown_pct:.1f}%")
-                else:
-                    print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
+                    if report.is_viable:
+                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}% DD={report.drawdown.max_drawdown_pct:.1f}%")
+                    else:
+                        print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
 
             except Exception as e:
                 print(f"ERROR: {e}")
+
+    # Sharpe-weighted allocation across viable strategies
+    if bt_results:
+        allocations = compute_sharpe_weights(bt_results, config.initial_capital)
+        if allocations:
+            print(f"\n  SHARPE-WEIGHTED ALLOCATION ({len(allocations)} strategies):")
+            for a in allocations[:5]:
+                print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
     return results
 
@@ -155,12 +201,14 @@ def run_crypto_backtest(
     timeframe: str = "1d",
     config: BacktestConfig | None = None,
     walk_forward: bool = False,
+    use_cpcv: bool = False,
 ) -> list[dict]:
     """Run backtest on crypto pairs."""
     if config is None:
         config = BacktestConfig()
 
     results = []
+    bt_results = []
     strategies = get_all_strategies("crypto")
 
     for pair in pairs:
@@ -180,32 +228,72 @@ def run_crypto_backtest(
             print(f"  Testing: {meta.name}...", end=" ", flush=True)
 
             try:
-                if walk_forward:
+                if use_cpcv:
+                    cpcv = cpcv_analysis(
+                        strategy, data.df, pair, "crypto", config,
+                        num_groups=6, test_groups=2, purge_bars=5,
+                    )
+                    summary = {
+                        "strategy": meta.name,
+                        "symbol": pair,
+                        "asset_class": "crypto",
+                        "sharpe": f"{cpcv.mean_sharpe:.2f}",
+                        "cagr": f"{cpcv.mean_cagr:+.2f}%",
+                        "max_drawdown": f"{cpcv.mean_max_dd:.2f}%",
+                        "prob_overfit": f"{cpcv.prob_overfit:.1%}",
+                        "prob_sharpe_pos": f"{cpcv.prob_sharpe_positive:.1%}",
+                        "deflated_sharpe": f"{cpcv.deflated_sharpe:.2f}",
+                        "cpcv_paths": cpcv.num_paths,
+                        "total_trades": "N/A",
+                        "win_rate": "N/A",
+                    }
+                    results.append(summary)
+                    print(f"CPCV mean_sharpe={cpcv.mean_sharpe:.2f} P(overfit)={cpcv.prob_overfit:.1%} paths={cpcv.num_paths}")
+
+                elif walk_forward:
                     wf = walk_forward_analysis(
                         strategy, data.df, pair, "crypto", config,
                         num_windows=3,
                     )
                     report = wf.combined_oos_report
-                    extra = {"wf_efficiency": f"{wf.wf_efficiency:.3f}"}
+                    summary = report.summary()
+                    summary["strategy"] = meta.name
+                    summary["symbol"] = pair
+                    summary["asset_class"] = "crypto"
+                    summary["wf_efficiency"] = f"{wf.wf_efficiency:.3f}"
+                    results.append(summary)
+
+                    if report.is_viable:
+                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}%")
+                    else:
+                        print(f"✗ Sharpe={report.sharpe_ratio:.2f}")
+
                 else:
-                    bt = run_backtest(strategy, data.df, pair, "crypto", config)
+                    total_combos = len(pairs) * len(strategies)
+                    bt = run_backtest(strategy, data.df, pair, "crypto", config, num_trials=total_combos)
+                    bt_results.append(bt)
                     report = bt.report
-                    extra = {}
+                    summary = report.summary()
+                    summary["strategy"] = meta.name
+                    summary["symbol"] = pair
+                    summary["asset_class"] = "crypto"
+                    results.append(summary)
 
-                summary = report.summary()
-                summary["strategy"] = meta.name
-                summary["symbol"] = pair
-                summary["asset_class"] = "crypto"
-                summary.update(extra)
-                results.append(summary)
-
-                if report.is_viable:
-                    print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}%")
-                else:
-                    print(f"✗ Sharpe={report.sharpe_ratio:.2f}")
+                    if report.is_viable:
+                        print(f"✓ Sharpe={report.sharpe_ratio:.2f} CAGR={report.cagr_pct:+.1f}%")
+                    else:
+                        print(f"✗ Sharpe={report.sharpe_ratio:.2f}")
 
             except Exception as e:
                 print(f"ERROR: {e}")
+
+    # Sharpe-weighted allocation
+    if bt_results:
+        allocations = compute_sharpe_weights(bt_results, config.initial_capital)
+        if allocations:
+            print(f"\n  SHARPE-WEIGHTED ALLOCATION ({len(allocations)} strategies):")
+            for a in allocations[:5]:
+                print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
     return results
 
@@ -290,7 +378,7 @@ def run_genetic_optimization(
 
     # Optimize each strategy class
     strategy_classes = {
-        "stock": [VWAPReversion, DualMomentum, GapFade, AdaptiveTrend],
+        "stock": [DualMomentum, GapFade, AdaptiveTrend],
         "crypto": [CryptoMomentum, CryptoMeanReversion, AdaptiveTrend],
     }
 
@@ -362,6 +450,7 @@ def main():
     # Analysis modes
     parser.add_argument("--walk-forward", action="store_true", help="Use walk-forward analysis")
     parser.add_argument("--windows", type=int, default=5, help="Walk-forward windows")
+    parser.add_argument("--cpcv", action="store_true", help="Use Combinatorial Purged Cross-Validation (strongest anti-overfit)")
     parser.add_argument("--optimize", action="store_true", help="Run genetic optimization")
     parser.add_argument("--ai-eval", action="store_true", help="Use AI to evaluate results")
     parser.add_argument("--ai-provider", type=str, default="claude", choices=["claude", "openai"])
@@ -416,7 +505,7 @@ def main():
         else:
             all_results.extend(run_stock_backtest(
                 args.stocks, args.period, args.interval, bt_config,
-                args.walk_forward, args.windows,
+                args.walk_forward, args.windows, args.cpcv,
             ))
 
     if args.crypto:
@@ -429,7 +518,7 @@ def main():
         else:
             all_results.extend(run_crypto_backtest(
                 args.crypto, args.crypto_days, args.interval, bt_config,
-                args.walk_forward,
+                args.walk_forward, args.cpcv,
             ))
 
     if args.polymarket_slugs or args.polymarket_search:
@@ -457,7 +546,10 @@ def main():
         if viable:
             print(f"\n  TOP STRATEGIES (Sharpe > 0.5):")
             for r in sorted(viable, key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")), reverse=True)[:5]:
-                print(f"    {r['strategy']:25s} {r['symbol']:12s} Sharpe={r['sharpe']:>6s} CAGR={r.get('cagr', 'N/A'):>8s}")
+                extra = ""
+                if "prob_overfit" in r:
+                    extra = f" P(overfit)={r['prob_overfit']}"
+                print(f"    {r['strategy']:25s} {r['symbol']:12s} Sharpe={r['sharpe']:>6s} CAGR={r.get('cagr', 'N/A'):>8s}{extra}")
 
     # AI evaluation
     if args.ai_eval and all_results:

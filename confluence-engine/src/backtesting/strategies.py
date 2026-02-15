@@ -85,74 +85,6 @@ class BaseStrategy(ABC):
 # ═══════════════════════════════════════════════════════════════
 
 
-class VWAPReversion(BaseStrategy):
-    """
-    VWAP Mean Reversion — bread-and-butter day trading strategy.
-
-    Buy when price drops N standard deviations below VWAP.
-    Sell when price rises N standard deviations above VWAP.
-    Exit at VWAP (mean reversion target).
-
-    Works best in range-bound, liquid markets.
-    Parameters: lookback (for rolling VWAP), entry_std, exit_std.
-    """
-
-    def __init__(self, lookback: int = 20, entry_std: float = 2.0, exit_std: float = 0.5):
-        self.lookback = lookback
-        self.entry_std = entry_std
-        self.exit_std = exit_std
-
-    def meta(self) -> StrategyMeta:
-        return StrategyMeta(
-            name="vwap_reversion",
-            asset_classes=["stock", "crypto"],
-            param_count=3,
-            param_ranges={"lookback": (10, 50), "entry_std": (1.5, 3.0), "exit_std": (0.2, 1.0)},
-            description="Buy below VWAP bands, sell above — mean reversion to fair value",
-        )
-
-    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
-        signals = []
-        if len(df) < self.lookback + 1:
-            return signals
-
-        # Compute rolling VWAP (approximation using typical price * volume)
-        typical = (df["high"] + df["low"] + df["close"]) / 3
-        cum_tp_vol = (typical * df["volume"]).rolling(self.lookback).sum()
-        cum_vol = df["volume"].rolling(self.lookback).sum()
-        vwap = cum_tp_vol / cum_vol.replace(0, np.nan)
-
-        # Standard deviation of price around VWAP
-        deviation = (df["close"] - vwap).rolling(self.lookback).std()
-
-        for i in range(self.lookback, len(df)):
-            if pd.isna(vwap.iloc[i]) or pd.isna(deviation.iloc[i]) or deviation.iloc[i] <= 0:
-                continue
-
-            z_score = (df["close"].iloc[i] - vwap.iloc[i]) / deviation.iloc[i]
-
-            # Long: price well below VWAP
-            if z_score < -self.entry_std:
-                signals.append(Signal(
-                    bar_index=i,
-                    side=Side.LONG,
-                    confidence=min(1.0, abs(z_score) / (self.entry_std * 2)),
-                    reason=f"VWAP reversion: z={z_score:.2f}, price={df['close'].iloc[i]:.2f}, vwap={vwap.iloc[i]:.2f}",
-                    stop_loss_pct=abs(z_score) * deviation.iloc[i] / df["close"].iloc[i] * 100 * 1.5,
-                ))
-            # Short: price well above VWAP
-            elif z_score > self.entry_std:
-                signals.append(Signal(
-                    bar_index=i,
-                    side=Side.SHORT,
-                    confidence=min(1.0, abs(z_score) / (self.entry_std * 2)),
-                    reason=f"VWAP reversion short: z={z_score:.2f}",
-                    stop_loss_pct=abs(z_score) * deviation.iloc[i] / df["close"].iloc[i] * 100 * 1.5,
-                ))
-
-        return signals
-
-
 class OpeningRangeBreakout(BaseStrategy):
     """
     Opening Range Breakout (ORB) — classic day trading strategy.
@@ -311,24 +243,40 @@ class DualMomentum(BaseStrategy):
     1. Absolute momentum is positive (asset > risk-free rate)
     2. Relative momentum ranks it above alternatives
 
-    For backtesting, we simplify: go long when both fast and slow
-    momentum are positive and accelerating.
+    Enhanced with:
+    - Volatility regime filter (skip trades in choppy markets)
+    - Wider parameter ranges for longer-term momentum (60/90/120 day)
+    - Acceleration confirmation (momentum must be increasing)
 
-    Parameters: fast_period, slow_period.
+    Parameters: fast_period, slow_period, vol_lookback.
     """
 
-    def __init__(self, fast_period: int = 10, slow_period: int = 40):
+    def __init__(self, fast_period: int = 10, slow_period: int = 40, vol_lookback: int = 20):
         self.fast_period = fast_period
         self.slow_period = slow_period
+        self.vol_lookback = vol_lookback
 
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="dual_momentum",
             asset_classes=["stock", "crypto"],
-            param_count=2,
-            param_ranges={"fast_period": (5, 20), "slow_period": (20, 60)},
-            description="Dual momentum — long only when both timeframes confirm",
+            param_count=3,
+            param_ranges={"fast_period": (5, 30), "slow_period": (30, 120), "vol_lookback": (10, 40)},
+            description="Dual momentum with regime filter — long when both timeframes confirm in trending regime",
         )
+
+    def _is_trending_regime(self, closes: np.ndarray, idx: int) -> bool:
+        """Check if we're in a trending regime (not choppy) using efficiency ratio."""
+        if idx < self.vol_lookback:
+            return True  # Default to allowing trades with insufficient data
+        window = closes[idx - self.vol_lookback:idx + 1]
+        direction = abs(window[-1] - window[0])
+        volatility = sum(abs(window[j] - window[j - 1]) for j in range(1, len(window)))
+        if volatility == 0:
+            return False
+        efficiency_ratio = direction / volatility
+        # ER > 0.3 = trending, ER < 0.3 = choppy/mean-reverting
+        return efficiency_ratio > 0.3
 
     def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
         signals = []
@@ -338,11 +286,14 @@ class DualMomentum(BaseStrategy):
         closes = df["close"].values
 
         for i in range(self.slow_period + 1, len(df)):
+            # Regime filter: skip choppy markets
+            if not self._is_trending_regime(closes, i):
+                continue
+
             fast_mom = (closes[i] - closes[i - self.fast_period]) / closes[i - self.fast_period]
             slow_mom = (closes[i] - closes[i - self.slow_period]) / closes[i - self.slow_period]
 
             prev_fast = (closes[i-1] - closes[i-1 - self.fast_period]) / closes[i-1 - self.fast_period]
-            prev_slow = (closes[i-1] - closes[i-1 - self.slow_period]) / closes[i-1 - self.slow_period]
 
             # Both momentum positive and accelerating = strong long
             if fast_mom > 0 and slow_mom > 0 and fast_mom > prev_fast:
@@ -371,25 +322,31 @@ class DualMomentum(BaseStrategy):
 
 class CryptoMomentum(BaseStrategy):
     """
-    Crypto-specific momentum with volume confirmation.
+    Crypto-specific momentum with volume confirmation and regime filter.
 
     Crypto trends harder than equities — momentum strategies work better.
-    Uses ROC + volume surge as confirmation.
+    Uses ROC + volume surge + volatility regime filter.
 
-    Parameters: roc_period, volume_multiplier.
+    Enhanced:
+    - ATR-based dynamic stops (adapt to current volatility)
+    - Efficiency ratio regime filter (skip choppy markets)
+    - Wider ROC threshold range for optimization
+
+    Parameters: roc_period, volume_multiplier, roc_threshold.
     """
 
-    def __init__(self, roc_period: int = 12, volume_mult: float = 1.5):
+    def __init__(self, roc_period: int = 12, volume_mult: float = 1.5, roc_threshold: float = 3.0):
         self.roc_period = roc_period
         self.volume_mult = volume_mult
+        self.roc_threshold = roc_threshold
 
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="crypto_momentum",
             asset_classes=["crypto"],
-            param_count=2,
-            param_ranges={"roc_period": (6, 24), "volume_mult": (1.2, 3.0)},
-            description="Crypto momentum with volume surge confirmation",
+            param_count=3,
+            param_ranges={"roc_period": (6, 30), "volume_mult": (1.2, 3.0), "roc_threshold": (1.5, 6.0)},
+            description="Crypto momentum with volume surge + regime filter + dynamic stops",
         )
 
     def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
@@ -399,31 +356,47 @@ class CryptoMomentum(BaseStrategy):
             return signals
 
         closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
         volumes = df["volume"].values
 
         for i in range(lookback, len(df)):
+            # Regime filter: efficiency ratio
+            window = closes[i - 20:i + 1]
+            direction = abs(window[-1] - window[0])
+            volatility = sum(abs(window[j] - window[j - 1]) for j in range(1, len(window)))
+            er = direction / volatility if volatility > 0 else 0
+            if er < 0.25:  # Skip choppy regime
+                continue
+
             roc = (closes[i] - closes[i - self.roc_period]) / closes[i - self.roc_period] * 100
             avg_vol = np.mean(volumes[i - 20:i])
             vol_ratio = volumes[i] / avg_vol if avg_vol > 0 else 1.0
 
+            # ATR-based dynamic stops
+            recent_tr = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1]))
+                         for j in range(max(1, i - 14), i + 1)]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.03
+            atr_pct = atr / closes[i] * 100
+
             # Strong momentum + volume confirmation
-            if roc > 3.0 and vol_ratio > self.volume_mult:
+            if roc > self.roc_threshold and vol_ratio > self.volume_mult:
                 signals.append(Signal(
                     bar_index=i,
                     side=Side.LONG,
                     confidence=min(1.0, roc / 10.0 * vol_ratio / 3.0),
-                    reason=f"Crypto momentum: ROC={roc:.1f}%, vol={vol_ratio:.1f}x",
-                    stop_loss_pct=3.0,
-                    take_profit_pct=6.0,
+                    reason=f"Crypto momentum: ROC={roc:.1f}%, vol={vol_ratio:.1f}x, ER={er:.2f}",
+                    stop_loss_pct=max(1.5, atr_pct * 2),
+                    take_profit_pct=max(3.0, atr_pct * 4),
                 ))
-            elif roc < -3.0 and vol_ratio > self.volume_mult:
+            elif roc < -self.roc_threshold and vol_ratio > self.volume_mult:
                 signals.append(Signal(
                     bar_index=i,
                     side=Side.SHORT,
                     confidence=min(1.0, abs(roc) / 10.0 * vol_ratio / 3.0),
-                    reason=f"Crypto momentum short: ROC={roc:.1f}%, vol={vol_ratio:.1f}x",
-                    stop_loss_pct=3.0,
-                    take_profit_pct=6.0,
+                    reason=f"Crypto momentum short: ROC={roc:.1f}%, vol={vol_ratio:.1f}x, ER={er:.2f}",
+                    stop_loss_pct=max(1.5, atr_pct * 2),
+                    take_profit_pct=max(3.0, atr_pct * 4),
                 ))
 
         return signals
@@ -707,20 +680,28 @@ class AdaptiveTrend(BaseStrategy):
 
 
 def get_all_strategies(asset_class: str | None = None) -> list[BaseStrategy]:
-    """Get all available strategies, optionally filtered by asset class."""
+    """Get all available strategies, optionally filtered by asset class.
+
+    VWAPReversion removed — negative Sharpe across all assets, unfixable.
+    DualMomentum expanded with longer lookback periods (60/90/120 day).
+    CryptoMomentum expanded with tuned parameters.
+    """
     all_strategies = [
-        # Stocks
-        VWAPReversion(lookback=20, entry_std=2.0),
-        VWAPReversion(lookback=30, entry_std=2.5),
+        # Stocks — momentum-focused (reversion strategies removed)
         OpeningRangeBreakout(range_bars=6),
         OpeningRangeBreakout(range_bars=12),
         GapFade(min_gap_pct=0.5, max_gap_pct=3.0),
         GapFade(min_gap_pct=1.0, max_gap_pct=5.0),
         DualMomentum(fast_period=10, slow_period=40),
         DualMomentum(fast_period=5, slow_period=20),
-        # Crypto
+        DualMomentum(fast_period=15, slow_period=60),    # Medium-term
+        DualMomentum(fast_period=20, slow_period=90),    # Longer-term
+        DualMomentum(fast_period=30, slow_period=120),   # Macro momentum
+        # Crypto — momentum dominates
         CryptoMomentum(roc_period=12, volume_mult=1.5),
         CryptoMomentum(roc_period=8, volume_mult=2.0),
+        CryptoMomentum(roc_period=18, volume_mult=1.3, roc_threshold=2.0),  # Longer/looser
+        CryptoMomentum(roc_period=6, volume_mult=1.5, roc_threshold=4.0),   # Shorter/stricter
         CryptoMeanReversion(period=20, num_std=2.5),
         CryptoMeanReversion(period=30, num_std=3.0),
         # Polymarket
