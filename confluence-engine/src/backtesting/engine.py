@@ -46,6 +46,14 @@ from src.backtesting.strategies import BaseStrategy, Side, Signal
 
 log = logging.getLogger("forge.engine")
 
+# Try to import the Rust hot path — falls back to pure Python if not compiled
+try:
+    from forge_engine import run_backtest_loop as _rust_backtest_loop, RustBacktestConfig
+    RUST_ENGINE_AVAILABLE = True
+    log.info("Rust engine loaded — using compiled hot path")
+except ImportError:
+    RUST_ENGINE_AVAILABLE = False
+
 
 @dataclass
 class Trade:
@@ -153,6 +161,188 @@ def _unrealized_pnl(position: dict, current_price: float) -> float:
         return (position["entry_price"] - current_price) / position["entry_price"] * position["size_dollars"]
 
 
+def _run_backtest_rust(
+    strategy: BaseStrategy,
+    df: pd.DataFrame,
+    symbol: str,
+    asset_class: str,
+    config: BacktestConfig,
+    risk_manager: RiskManager,
+    num_trials: int,
+    meta_labeler=None,
+) -> BacktestResult:
+    """Run backtest using the Rust hot path for the bar-by-bar loop."""
+    meta = strategy.meta()
+
+    # Generate signals in Python (strategies stay in Python)
+    signals = strategy.generate_signals(df)
+    total_signals = len(signals)
+
+    if not signals:
+        # No signals — return empty result
+        equity_series = pd.Series([config.initial_capital] * len(df), index=df.index)
+        periods = 365 if asset_class == "crypto" else 252
+        report = generate_report(
+            equity_curve=equity_series, trade_pnls=[], trade_durations=[],
+            num_trials=num_trials, periods_per_year=periods, asset_class=asset_class,
+        )
+        return BacktestResult(
+            strategy_name=meta.name, symbol=symbol, asset_class=asset_class,
+            timeframe=df.index.inferred_freq or "unknown", config=config,
+            trades=[], equity_curve=equity_series, report=report,
+            signals_generated=0, signals_blocked=0, window_type="full",
+        )
+
+    # Deduplicate signals by bar index (keep first per bar)
+    seen_bars = set()
+    deduped = []
+    for sig in signals:
+        if sig.bar_index not in seen_bars and sig.side != Side.FLAT:
+            seen_bars.add(sig.bar_index)
+            deduped.append(sig)
+
+    n_sig = len(deduped)
+
+    # Pre-compute signal arrays for Rust
+    sig_bars = np.array([s.bar_index for s in deduped], dtype=np.int64)
+    sig_sides = np.array([1 if s.side == Side.LONG else -1 for s in deduped], dtype=np.int8)
+    sig_confs = np.array([s.confidence for s in deduped], dtype=np.float64)
+    sig_stops = np.array([s.stop_loss_pct for s in deduped], dtype=np.float64)
+    sig_targets = np.array([s.take_profit_pct for s in deduped], dtype=np.float64)
+
+    # Pre-compute position sizes + risk/meta blocking in Python
+    kelly = KellyCriterion(
+        kelly_fraction=config.kelly_fraction,
+        max_position_pct=config.max_position_pct,
+    ) if config.use_kelly else None
+
+    cash = config.initial_capital
+    pos_sizes = np.zeros(n_sig, dtype=np.float64)
+    pos_shares = np.zeros(n_sig, dtype=np.int64)
+    blocked = np.zeros(n_sig, dtype=bool)
+
+    # Approximate sizing: use close price at signal bar
+    closes_arr = df["close"].values
+    for si, sig in enumerate(deduped):
+        bar_idx = sig.bar_index
+        if bar_idx >= len(closes_arr):
+            blocked[si] = True
+            continue
+        price = closes_arr[bar_idx]
+        if price <= 0:
+            blocked[si] = True
+            continue
+
+        # Risk manager check
+        if config.use_risk_manager:
+            decision = risk_manager.check_trade(symbol=symbol, asset_class=asset_class)
+            if decision.action in (RiskAction.BLOCK, RiskAction.HALT):
+                blocked[si] = True
+                continue
+
+        # Meta-labeling check
+        if meta_labeler is not None and config.use_meta_labeling:
+            try:
+                from src.backtesting.meta_labeling import extract_meta_features
+                features = extract_meta_features(df, bar_idx)
+                meta_conf = meta_labeler.predict_confidence(features)
+                if meta_conf < config.meta_label_threshold:
+                    blocked[si] = True
+                    continue
+            except Exception:
+                pass
+
+        # Position sizing
+        position_scale = 1.0 / max(1, config.max_positions)
+        frac = config.max_position_pct * 0.5 * position_scale
+        dollar_amount = cash * frac
+        shares = int(dollar_amount / price) if price > 0 else 0
+        pos_sizes[si] = dollar_amount
+        pos_shares[si] = shares
+
+    blocked_count = int(blocked.sum())
+
+    # Build Rust config
+    rust_cfg = RustBacktestConfig(
+        initial_capital=config.initial_capital,
+        slippage_pct=config.slippage_pct,
+        commission_per_trade=config.commission_per_trade,
+        max_holding_bars=config.max_holding_bars,
+        use_trailing_stop=config.use_trailing_stop,
+        trailing_stop_atr_mult=config.trailing_stop_atr_mult,
+        max_positions=config.max_positions,
+        partial_exit_enabled=config.partial_exit_enabled,
+        partial_exit_pct=config.partial_exit_pct,
+        partial_exit_atr_mult=config.partial_exit_atr_mult,
+        use_atr_barriers=config.use_atr_barriers,
+        atr_period=config.atr_period,
+        atr_stop_mult=config.atr_stop_mult,
+        atr_target_mult=config.atr_target_mult,
+    )
+
+    # Call Rust hot path
+    rust_trades, equity_arr = _rust_backtest_loop(
+        df["open"].values.astype(np.float64),
+        df["high"].values.astype(np.float64),
+        df["low"].values.astype(np.float64),
+        df["close"].values.astype(np.float64),
+        sig_bars, sig_sides, sig_confs, sig_stops, sig_targets,
+        pos_sizes, pos_shares, blocked,
+        rust_cfg,
+    )
+
+    # Convert Rust trades back to Python Trade objects
+    trades = []
+    for rt in rust_trades:
+        side = Side.LONG if rt.side == 1 else Side.SHORT
+        entry_time = str(df.index[rt.entry_bar]) if rt.entry_bar < len(df) else ""
+        exit_time = str(df.index[rt.exit_bar]) if rt.exit_bar < len(df) else ""
+        trades.append(Trade(
+            entry_bar=rt.entry_bar, exit_bar=rt.exit_bar,
+            entry_price=rt.entry_price, exit_price=rt.exit_price,
+            side=side, pnl_pct=rt.pnl_pct, pnl_dollars=rt.pnl_dollars,
+            position_size=rt.position_size, bars_held=rt.bars_held,
+            entry_time=entry_time, exit_time=exit_time,
+            signal_confidence=rt.signal_confidence, exit_reason=rt.exit_reason,
+        ))
+
+    # Record meta-labeler outcomes
+    if meta_labeler is not None:
+        for t in trades:
+            try:
+                from src.backtesting.meta_labeling import extract_meta_features
+                features = extract_meta_features(df, t.entry_bar)
+                meta_labeler.record_outcome(features, t.pnl_pct > 0)
+            except Exception:
+                pass
+
+    # Build equity series
+    equity_series = pd.Series(equity_arr, index=df.index)
+
+    # Generate report
+    trade_pnls = [t.pnl_pct for t in trades]
+    trade_durations = [t.bars_held for t in trades]
+    periods = 365 if asset_class == "crypto" else 252
+
+    report = generate_report(
+        equity_curve=equity_series,
+        trade_pnls=trade_pnls,
+        trade_durations=trade_durations,
+        num_trials=num_trials,
+        periods_per_year=periods,
+        timeframe=df.index.inferred_freq or "1d",
+        asset_class=asset_class,
+    )
+
+    return BacktestResult(
+        strategy_name=meta.name, symbol=symbol, asset_class=asset_class,
+        timeframe=df.index.inferred_freq or "unknown", config=config,
+        trades=trades, equity_curve=equity_series, report=report,
+        signals_generated=total_signals, signals_blocked=blocked_count,
+        window_type="full",
+    )
+
+
 def run_backtest(
     strategy: BaseStrategy,
     df: pd.DataFrame,
@@ -173,12 +363,24 @@ def run_backtest(
     4. Equity includes unrealized P&L of ALL open positions
     5. Trailing stops ratchet up as price moves in favor (never down)
 
+    Uses the Rust hot path when available, falls back to pure Python otherwise.
+
     Returns a BacktestResult with full performance report.
     """
     if config is None:
         config = BacktestConfig()
     if risk_manager is None:
         risk_manager = RiskManager()
+
+    # Dispatch to Rust if available
+    if RUST_ENGINE_AVAILABLE:
+        try:
+            return _run_backtest_rust(
+                strategy, df, symbol, asset_class, config,
+                risk_manager, num_trials, meta_labeler,
+            )
+        except Exception as e:
+            log.warning("Rust engine failed, falling back to Python: %s", e)
 
     meta = strategy.meta()
 

@@ -173,7 +173,7 @@ class DualMomentum(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="dual_momentum",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=3,
             param_ranges={"fast_period": (5, 30), "slow_period": (30, 120), "vol_lookback": (10, 40)},
             description="Dual momentum with regime filter — long when both timeframes confirm in trending regime",
@@ -525,7 +525,7 @@ class AdaptiveTrend(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="adaptive_trend",
-            asset_classes=["stock", "crypto", "polymarket"],
+            asset_classes=["stock", "crypto", "polymarket", "forex", "futures"],
             param_count=3,
             param_ranges={"er_period": (5, 20), "fast_period": (2, 5), "slow_period": (20, 50)},
             description="Kaufman Adaptive MA — self-adjusts to trending/choppy conditions",
@@ -615,7 +615,7 @@ class DenoisedMomentum(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="denoised_momentum",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=3,
             param_ranges={"fast_period": (5, 20), "slow_period": (20, 80), "noise_ratio": (0.5, 3.0)},
             description="Momentum on Kalman-denoised prices — signal processing meets trading",
@@ -783,7 +783,7 @@ class HurstAdaptive(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="hurst_adaptive",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=2,
             param_ranges={"hurst_lookback": (50, 200), "momentum_period": (10, 40)},
             description="Adapts between momentum and mean-reversion based on Hurst exponent",
@@ -962,7 +962,7 @@ class EntropyRegimeStrategy(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="entropy_regime",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=3,
             param_ranges={
                 "entropy_lookback": (30, 100),
@@ -1114,7 +1114,7 @@ class DonchianBreakout(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="donchian_breakout",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=2,
             param_ranges={"entry_period": (10, 55), "exit_period": (5, 20)},
             description="Turtle-style Donchian channel breakout — the original trend-following system",
@@ -1185,7 +1185,7 @@ class MomentumRankRotation(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="momentum_rank_rotation",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=2,
             param_ranges={"lookback_period": (20, 120), "momentum_threshold": (0.5, 0.9)},
             description="Cross-sectional momentum rank — only trade top-percentile momentum",
@@ -1275,7 +1275,7 @@ class VolatilityBreakoutKeltner(BaseStrategy):
     def meta(self) -> StrategyMeta:
         return StrategyMeta(
             name="keltner_breakout",
-            asset_classes=["stock", "crypto"],
+            asset_classes=["stock", "crypto", "forex", "futures"],
             param_count=2,
             param_ranges={"ema_period": (10, 40), "atr_mult": (1.5, 3.5)},
             description="Keltner channel breakout — ATR-based volatility expansion plays",
