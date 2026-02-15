@@ -106,7 +106,7 @@ def find_min_d(
     d_range: tuple[float, float] = (0.0, 1.0),
     d_step: float = 0.05,
     p_threshold: float = 0.05,
-    threshold: float = 1e-5,
+    threshold: float = 1e-3,
 ) -> float:
     """
     Find the minimum fractional differentiation order d that achieves stationarity.
@@ -179,7 +179,7 @@ def add_fracdiff_features(
     df: pd.DataFrame,
     d: float | None = None,
     columns: list[str] | None = None,
-    threshold: float = 1e-5,
+    threshold: float = 1e-3,
 ) -> pd.DataFrame:
     """
     Add fractionally differentiated features to a DataFrame.
