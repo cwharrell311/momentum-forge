@@ -39,11 +39,13 @@ from src.backtesting.data_feeds import (
     AssetClass,
     fetch_crypto_data,
     fetch_economic_calendar,
+    fetch_market_context,
     fetch_stock_data,
     fetch_stock_intraday,
     discover_polymarket_markets,
     fetch_polymarket_data,
 )
+from src.backtesting.meta_labeling import create_meta_labeler_for_strategy, reset_meta_labeler_registry
 from src.backtesting.engine import (
     BacktestConfig,
     BacktestResult,
@@ -62,9 +64,11 @@ from src.backtesting.strategies import (
     AdaptiveTrend,
     CryptoMeanReversion,
     CryptoMomentum,
+    DenoisedMomentum,
     DualMomentum,
+    EntropyRegimeStrategy,
     GapFade,
-    OpeningRangeBreakout,
+    HurstAdaptive,
     PredictionMomentum,
     PredictionReversion,
 )
@@ -85,10 +89,37 @@ def print_banner():
 ║         Research-Grade Multi-Asset Strategy Testing           ║
 ║                                                              ║
 ║  CPCV · Walk-Forward · Triple Barrier · Kelly Criterion      ║
-║  Regime Filter · Sharpe-Weighted Sizing · Deflated Sharpe    ║
+║  ATR Barriers · Meta-Labeling · Deflated Sharpe              ║
+║  Kalman Denoising · Hurst Adaptive · Entropy Filter          ║
+║  HMM Regime · FracDiff · Cross-Asset Context (VIX/DXY)      ║
 ║  Stocks · Crypto · Prediction Markets · Genetic Optimizer    ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
+
+
+def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Apply preprocessing pipeline: context merge + signal processing features."""
+    from src.backtesting.data_feeds import add_context_to_ohlcv
+
+    result = df.copy()
+
+    # 1. Merge cross-asset context (VIX, DXY, yields) if available
+    if context_df is not None:
+        try:
+            result = add_context_to_ohlcv(result, context_df)
+            log.info("  Context merged: VIX, DXY, yields added")
+        except Exception as e:
+            log.debug("  Context merge failed: %s", e)
+
+    # 2. Add signal processing features (Kalman, Hurst, entropy)
+    try:
+        from src.backtesting.signal_processing import add_signal_features
+        result = add_signal_features(result)
+        log.info("  Signal features added: denoised, kalman, hurst, entropy")
+    except Exception as e:
+        log.debug("  Signal feature extraction skipped: %s", e)
+
+    return result
 
 
 def run_stock_backtest(
@@ -109,6 +140,17 @@ def run_stock_backtest(
     strategies = get_all_strategies("stock")
     total_combos = len(symbols) * len(strategies)
 
+    # Fetch cross-asset context (VIX, DXY, yields) once for all stocks
+    context_df = None
+    try:
+        context_df = fetch_market_context(period=period)
+        print(f"  Market context loaded: VIX, DXY, 10Y/3M yields ({len(context_df)} rows)")
+    except Exception as e:
+        print(f"  Market context unavailable: {e}")
+
+    # Reset meta-labeler registry for fresh run
+    reset_meta_labeler_registry()
+
     for symbol in symbols:
         print(f"\n{'─' * 50}")
         print(f"  Fetching {symbol} ({period}, {interval})...")
@@ -119,16 +161,21 @@ def run_stock_backtest(
             print(f"  ERROR: {e}")
             continue
 
-        print(f"  Got {len(data.df)} bars from {data.df.index[0].date()} to {data.df.index[-1].date()}")
+        # Preprocess: add context + signal features
+        df = _preprocess_data(data.df, context_df)
+        print(f"  Got {len(df)} bars from {df.index[0].date()} to {df.index[-1].date()}")
 
         for strategy in strategies:
             meta = strategy.meta()
             print(f"  Testing: {meta.name}...", end=" ", flush=True)
 
+            # Get or create meta-labeler for this strategy
+            ml = create_meta_labeler_for_strategy(meta.name)
+
             try:
                 if use_cpcv:
                     cpcv = cpcv_analysis(
-                        strategy, data.df, symbol, "stock", config,
+                        strategy, df, symbol, "stock", config,
                         num_groups=6, test_groups=2, purge_bars=5,
                     )
                     summary = {
@@ -150,7 +197,7 @@ def run_stock_backtest(
 
                 elif walk_forward:
                     wf = walk_forward_analysis(
-                        strategy, data.df, symbol, "stock", config,
+                        strategy, df, symbol, "stock", config,
                         num_windows=wf_windows,
                     )
                     report = wf.combined_oos_report
@@ -167,7 +214,8 @@ def run_stock_backtest(
                         print(f"✗ Sharpe={report.sharpe_ratio:.2f} ({report.trades.total_trades} trades)")
 
                 else:
-                    bt = run_backtest(strategy, data.df, symbol, "stock", config, num_trials=total_combos)
+                    bt = run_backtest(strategy, df, symbol, "stock", config,
+                                      num_trials=total_combos, meta_labeler=ml)
                     bt_results.append(bt)
                     report = bt.report
                     summary = report.summary()
@@ -211,6 +259,9 @@ def run_crypto_backtest(
     bt_results = []
     strategies = get_all_strategies("crypto")
 
+    # Reset meta-labeler registry for fresh crypto run
+    reset_meta_labeler_registry()
+
     for pair in pairs:
         print(f"\n{'─' * 50}")
         print(f"  Fetching {pair} ({days}d, {timeframe})...")
@@ -221,16 +272,21 @@ def run_crypto_backtest(
             print(f"  ERROR: {e}")
             continue
 
-        print(f"  Got {len(data.df)} bars")
+        # Preprocess: add signal features (no context for crypto - VIX/DXY less relevant)
+        df = _preprocess_data(data.df)
+        print(f"  Got {len(df)} bars")
 
         for strategy in strategies:
             meta = strategy.meta()
             print(f"  Testing: {meta.name}...", end=" ", flush=True)
 
+            # Get or create meta-labeler for this strategy
+            ml = create_meta_labeler_for_strategy(meta.name)
+
             try:
                 if use_cpcv:
                     cpcv = cpcv_analysis(
-                        strategy, data.df, pair, "crypto", config,
+                        strategy, df, pair, "crypto", config,
                         num_groups=6, test_groups=2, purge_bars=5,
                     )
                     summary = {
@@ -252,7 +308,7 @@ def run_crypto_backtest(
 
                 elif walk_forward:
                     wf = walk_forward_analysis(
-                        strategy, data.df, pair, "crypto", config,
+                        strategy, df, pair, "crypto", config,
                         num_windows=3,
                     )
                     report = wf.combined_oos_report
@@ -270,7 +326,8 @@ def run_crypto_backtest(
 
                 else:
                     total_combos = len(pairs) * len(strategies)
-                    bt = run_backtest(strategy, data.df, pair, "crypto", config, num_trials=total_combos)
+                    bt = run_backtest(strategy, df, pair, "crypto", config,
+                                      num_trials=total_combos, meta_labeler=ml)
                     bt_results.append(bt)
                     report = bt.report
                     summary = report.summary()

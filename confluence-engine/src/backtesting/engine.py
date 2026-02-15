@@ -77,8 +77,15 @@ class BacktestConfig:
     max_position_pct: float = 0.25          # Max 25% in one trade
     default_stop_loss_pct: float = 2.0
     default_take_profit_pct: float = 4.0     # 2:1 R:R
+    max_holding_bars: int = 20              # Triple barrier vertical: max bars before force exit
     use_risk_manager: bool = True
     min_trades_per_window: int = 5           # Reject thin results
+    use_atr_barriers: bool = True           # Use ATR-based stops instead of fixed signal stops
+    atr_period: int = 14                     # ATR lookback
+    atr_stop_mult: float = 2.0              # Stop at 2x ATR from entry
+    atr_target_mult: float = 3.0            # Target at 3x ATR (1.5:1 R:R)
+    use_meta_labeling: bool = True           # Use meta-labeler for signal filtering
+    meta_label_threshold: float = 0.55       # Min P(correct) to trade
 
 
 @dataclass
@@ -149,6 +156,7 @@ def run_backtest(
     config: BacktestConfig | None = None,
     risk_manager: RiskManager | None = None,
     num_trials: int = 1,
+    meta_labeler=None,  # Optional MetaLabeler instance
 ) -> BacktestResult:
     """
     Run a single backtest of a strategy on historical data.
@@ -216,6 +224,13 @@ def run_backtest(
                 trades.append(trade)
                 cash += pnl_dollars
                 risk_manager.update_state(cash, last_trade_won=False)
+                if meta_labeler is not None:
+                    try:
+                        from src.backtesting.meta_labeling import extract_meta_features
+                        features = extract_meta_features(df, position["entry_bar"])
+                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
+                    except Exception:
+                        pass
                 position = None
 
             elif hit_target:
@@ -225,7 +240,33 @@ def run_backtest(
                 trades.append(trade)
                 cash += pnl_dollars
                 risk_manager.update_state(cash, last_trade_won=True)
+                if meta_labeler is not None:
+                    try:
+                        from src.backtesting.meta_labeling import extract_meta_features
+                        features = extract_meta_features(df, position["entry_bar"])
+                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
+                    except Exception:
+                        pass
                 position = None
+
+            # Triple barrier vertical: force exit after max_holding_bars
+            elif config.max_holding_bars > 0 and position is not None:
+                bars_held = i - position["entry_bar"]
+                if bars_held >= config.max_holding_bars:
+                    trade, pnl_dollars = _close_position(
+                        position, price, i, timestamp, "time_expiry", config.slippage_pct,
+                    )
+                    trades.append(trade)
+                    cash += pnl_dollars
+                    risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
+                    if meta_labeler is not None:
+                        try:
+                            from src.backtesting.meta_labeling import extract_meta_features
+                            features = extract_meta_features(df, position["entry_bar"])
+                            meta_labeler.record_outcome(features, trade.pnl_pct > 0)
+                        except Exception:
+                            pass
+                    position = None
 
         # ── 2. Process signal if one exists on this bar ──
         signal = signal_map.get(i)
@@ -239,6 +280,13 @@ def run_backtest(
                 trades.append(trade)
                 cash += pnl_dollars
                 risk_manager.update_state(cash, last_trade_won=(trade.pnl_pct > 0))
+                if meta_labeler is not None:
+                    try:
+                        from src.backtesting.meta_labeling import extract_meta_features
+                        features = extract_meta_features(df, position["entry_bar"])
+                        meta_labeler.record_outcome(features, trade.pnl_pct > 0)
+                    except Exception:
+                        pass
                 position = None
 
             # Open new position if flat
@@ -258,6 +306,21 @@ def run_backtest(
                         blocked = True
                     else:
                         size_mult = decision.size_multiplier
+
+                # Meta-labeling: predict if this signal is likely correct
+                if meta_labeler is not None and config.use_meta_labeling:
+                    try:
+                        from src.backtesting.meta_labeling import extract_meta_features
+                        features = extract_meta_features(df, i)
+                        meta_confidence = meta_labeler.predict_confidence(features)
+                        if meta_confidence < config.meta_label_threshold:
+                            blocked_signals += 1
+                            blocked = True
+                        else:
+                            # Scale position size by meta confidence
+                            size_mult *= meta_confidence
+                    except Exception:
+                        pass  # Don't crash if meta-labeling fails
 
                 if not blocked and size_mult > 0:
                     # Position sizing
@@ -279,15 +342,35 @@ def run_backtest(
                     actual_shares = int(actual_size / price) if price > 0 else 0
 
                     if actual_shares > 0:
+                        # ATR-based dynamic barriers (override signal's fixed stops)
+                        if config.use_atr_barriers and i >= config.atr_period + 1:
+                            atr_val = compute_atr(
+                                df["high"].values[:i+1],
+                                df["low"].values[:i+1],
+                                df["close"].values[:i+1],
+                                period=config.atr_period,
+                            )
+                            if atr_val > 0:
+                                atr_pct = atr_val / price * 100
+                                # ATR-based stops override signal defaults
+                                effective_stop = atr_pct * config.atr_stop_mult
+                                effective_target = atr_pct * config.atr_target_mult
+                            else:
+                                effective_stop = signal.stop_loss_pct
+                                effective_target = signal.take_profit_pct
+                        else:
+                            effective_stop = signal.stop_loss_pct
+                            effective_target = signal.take_profit_pct
+
                         slippage = config.slippage_pct / 100
                         if signal.side == Side.LONG:
                             entry_price = price * (1 + slippage)
-                            stop_price = entry_price * (1 - signal.stop_loss_pct / 100)
-                            target_price = entry_price * (1 + signal.take_profit_pct / 100)
+                            stop_price = entry_price * (1 - effective_stop / 100)
+                            target_price = entry_price * (1 + effective_target / 100)
                         else:
                             entry_price = price * (1 - slippage)
-                            stop_price = entry_price * (1 + signal.stop_loss_pct / 100)
-                            target_price = entry_price * (1 - signal.take_profit_pct / 100)
+                            stop_price = entry_price * (1 + effective_stop / 100)
+                            target_price = entry_price * (1 - effective_target / 100)
 
                         cash -= config.commission_per_trade
 
@@ -321,6 +404,13 @@ def run_backtest(
         )
         trades.append(trade)
         cash += pnl_dollars
+        if meta_labeler is not None:
+            try:
+                from src.backtesting.meta_labeling import extract_meta_features
+                features = extract_meta_features(df, position["entry_bar"])
+                meta_labeler.record_outcome(features, trade.pnl_pct > 0)
+            except Exception:
+                pass
         # Update last equity point to reflect closed position
         if equity_values:
             equity_values[-1] = cash
