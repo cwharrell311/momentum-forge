@@ -30,6 +30,8 @@ class AssetClass(Enum):
     STOCK = "stock"
     CRYPTO = "crypto"
     POLYMARKET = "polymarket"
+    FOREX = "forex"
+    FUTURES = "futures"
 
 
 @dataclass

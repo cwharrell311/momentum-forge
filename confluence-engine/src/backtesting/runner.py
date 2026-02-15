@@ -34,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from src.backtesting.data_feeds import (
     AssetClass,
@@ -57,6 +58,7 @@ from src.backtesting.engine import (
     compute_sharpe_weights,
     StrategyAllocation,
 )
+from src.backtesting.hrp import hrp_allocate
 from src.backtesting.genetic_optimizer import GeneticConfig, optimize
 from src.backtesting.ai_analyst import evaluate_strategies, format_report_for_display
 from src.backtesting.strategies import (
@@ -91,11 +93,13 @@ def print_banner():
 ║  CPCV · Walk-Forward · Triple Barrier · Kelly Criterion      ║
 ║  Trailing Stops · Chandelier Exit · Partial Exits            ║
 ║  Kalman Denoising · Hurst Adaptive · Entropy Filter          ║
-║  HMM Regime · FracDiff · GARCH Vol · Monte Carlo             ║
+║  HMM Regime · BOCPD Changepoint · FracDiff · GARCH Vol      ║
+║  HRP Portfolio · Monte Carlo · Deflated Sharpe               ║
 ║  Donchian Breakout · Keltner Channel · Momentum Rank         ║
 ║  Multi-Position · Multi-Timeframe · Cross-Asset Context      ║
 ║  Holdout Year · Feature Importance · Permutation Ranking     ║
-║  Stocks · Crypto · Prediction Markets · Genetic Optimizer    ║
+║  Stocks · Crypto · FX (OANDA) · Futures (IBKR)              ║
+║  SEC NLP (FinBERT) · Rust Hot Path (PyO3)                    ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
 
@@ -165,7 +169,15 @@ def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -
     except Exception as e:
         log.debug("  Multi-timeframe features skipped: %s", e)
 
-    # 6. GARCH volatility forecast — forward-looking vol estimate
+    # 6. Bayesian online changepoint detection — supplements HMM regime
+    try:
+        from src.backtesting.changepoint import add_changepoint_features
+        result = add_changepoint_features(result, hazard_lambda=250.0)
+        log.info("  BOCPD changepoint detection applied: cp_prob, cp_detected columns added")
+    except Exception as e:
+        log.debug("  BOCPD skipped: %s", e)
+
+    # 7. GARCH volatility forecast — forward-looking vol estimate
     try:
         from src.backtesting.metrics import garch_volatility_forecast, compute_returns
         if len(result) >= 100:
@@ -354,12 +366,12 @@ def run_stock_backtest(
             except Exception as e:
                 print(f"ERROR: {e}")
 
-    # Sharpe-weighted allocation across viable strategies
+    # HRP portfolio construction (replaces simple Sharpe-weighting)
     if bt_results:
-        allocations = compute_sharpe_weights(bt_results, config.initial_capital)
-        if allocations:
-            print(f"\n  SHARPE-WEIGHTED ALLOCATION ({len(allocations)} strategies):")
-            for a in allocations[:5]:
+        hrp = hrp_allocate(bt_results, config.initial_capital)
+        if hrp.allocations:
+            print(f"\n  HRP PORTFOLIO ALLOCATION ({len(hrp.allocations)} strategies):")
+            for a in hrp.allocations[:5]:
                 print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
     # Holdout report — the final gate
@@ -531,12 +543,12 @@ def run_crypto_backtest(
             except Exception as e:
                 print(f"ERROR: {e}")
 
-    # Sharpe-weighted allocation
+    # HRP portfolio construction
     if bt_results:
-        allocations = compute_sharpe_weights(bt_results, config.initial_capital)
-        if allocations:
-            print(f"\n  SHARPE-WEIGHTED ALLOCATION ({len(allocations)} strategies):")
-            for a in allocations[:5]:
+        hrp = hrp_allocate(bt_results, config.initial_capital)
+        if hrp.allocations:
+            print(f"\n  HRP PORTFOLIO ALLOCATION ({len(hrp.allocations)} strategies):")
+            for a in hrp.allocations[:5]:
                 print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
 
     # Holdout report
@@ -655,6 +667,156 @@ def run_polymarket_backtest(
     return results
 
 
+def run_fx_backtest(
+    pairs: list[str],
+    days: int = 1095,
+    config: BacktestConfig | None = None,
+    walk_forward: bool = False,
+    use_cpcv: bool = False,
+) -> list[dict]:
+    """Run backtest on FX pairs via OANDA."""
+    if config is None:
+        config = BacktestConfig()
+
+    from src.backtesting.fx_feed import fetch_fx_data
+
+    results = []
+    bt_results = []
+    strategies = get_all_strategies("forex")
+
+    # FX pairs work well with stock strategies too
+    if not strategies:
+        strategies = get_all_strategies("stock")
+
+    reset_meta_labeler_registry()
+
+    for pair in pairs:
+        print(f"\n{'─' * 50}")
+        print(f"  Fetching {pair} ({days}d)...")
+
+        try:
+            data = fetch_fx_data(pair, days_back=days)
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            continue
+
+        df = _preprocess_data(data.df)
+        print(f"  Got {len(df)} bars")
+
+        total_combos = len(pairs) * len(strategies)
+
+        for strategy in strategies:
+            meta = strategy.meta()
+            print(f"  Testing: {meta.name}...", end=" ", flush=True)
+
+            ml = create_meta_labeler_for_strategy(meta.name)
+
+            try:
+                summary, bt = _run_backtest_on_split(
+                    strategy, df, pair, "forex", config,
+                    walk_forward, use_cpcv, 3, total_combos, ml,
+                )
+                if summary:
+                    results.append(summary)
+                if bt:
+                    bt_results.append(bt)
+
+                sharpe_val = float(str(summary.get("sharpe", "0")).replace("+", ""))
+                if sharpe_val > 0.5:
+                    print(f"✓ Sharpe={summary['sharpe']} CAGR={summary.get('cagr', 'N/A')}")
+                else:
+                    trades = summary.get("total_trades", "?")
+                    print(f"✗ Sharpe={summary['sharpe']} ({trades} trades)")
+
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+    # HRP portfolio construction
+    if bt_results:
+        hrp = hrp_allocate(bt_results, config.initial_capital)
+        if hrp.allocations:
+            print(f"\n  HRP PORTFOLIO ALLOCATION ({len(hrp.allocations)} strategies):")
+            for a in hrp.allocations[:5]:
+                print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
+
+    return results
+
+
+def run_futures_backtest(
+    symbols: list[str],
+    days: int = 730,
+    config: BacktestConfig | None = None,
+    walk_forward: bool = False,
+    use_cpcv: bool = False,
+) -> list[dict]:
+    """Run backtest on futures via IBKR or ETF proxy."""
+    if config is None:
+        config = BacktestConfig()
+
+    from src.backtesting.futures_feed import fetch_futures_data
+
+    results = []
+    bt_results = []
+    strategies = get_all_strategies("futures")
+
+    # Futures work well with stock strategies
+    if not strategies:
+        strategies = get_all_strategies("stock")
+
+    reset_meta_labeler_registry()
+
+    for symbol in symbols:
+        print(f"\n{'─' * 50}")
+        print(f"  Fetching {symbol} futures ({days}d)...")
+
+        try:
+            data = fetch_futures_data(symbol, days_back=days)
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            continue
+
+        df = _preprocess_data(data.df)
+        print(f"  Got {len(df)} bars (source: {data.source})")
+
+        total_combos = len(symbols) * len(strategies)
+
+        for strategy in strategies:
+            meta = strategy.meta()
+            print(f"  Testing: {meta.name}...", end=" ", flush=True)
+
+            ml = create_meta_labeler_for_strategy(meta.name)
+
+            try:
+                summary, bt = _run_backtest_on_split(
+                    strategy, df, symbol, "futures", config,
+                    walk_forward, use_cpcv, 3, total_combos, ml,
+                )
+                if summary:
+                    results.append(summary)
+                if bt:
+                    bt_results.append(bt)
+
+                sharpe_val = float(str(summary.get("sharpe", "0")).replace("+", ""))
+                if sharpe_val > 0.5:
+                    print(f"✓ Sharpe={summary['sharpe']} CAGR={summary.get('cagr', 'N/A')}")
+                else:
+                    trades = summary.get("total_trades", "?")
+                    print(f"✗ Sharpe={summary['sharpe']} ({trades} trades)")
+
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+    # HRP portfolio construction
+    if bt_results:
+        hrp = hrp_allocate(bt_results, config.initial_capital)
+        if hrp.allocations:
+            print(f"\n  HRP PORTFOLIO ALLOCATION ({len(hrp.allocations)} strategies):")
+            for a in hrp.allocations[:5]:
+                print(f"    {a.strategy_name:25s} {a.symbol:12s} weight={a.weight:.1%} ${a.capital_allocated:,.0f}")
+
+    return results
+
+
 def run_genetic_optimization(
     symbol: str,
     asset_class: str = "stock",
@@ -738,13 +900,21 @@ def main():
 
     # Asset selection
     parser.add_argument("--stocks", nargs="+", default=[], help="Stock symbols (e.g., SPY QQQ AAPL)")
+    parser.add_argument("--watchlist", action="store_true",
+                        help="Load all tickers from config/watchlist.yaml (full 80-ticker universe)")
     parser.add_argument("--crypto", nargs="+", default=[], help="Crypto pairs (e.g., BTC/USDT ETH/USDT)")
+    parser.add_argument("--fx", nargs="+", default=[],
+                        help="FX pairs via OANDA (e.g., EUR/USD GBP/USD USD/JPY)")
+    parser.add_argument("--futures", nargs="+", default=[],
+                        help="Futures via IBKR or ETF proxy (e.g., ES NQ GC CL)")
     parser.add_argument("--polymarket-slugs", nargs="+", default=[], help="Polymarket slugs")
     parser.add_argument("--polymarket-search", type=str, default="", help="Search Polymarket")
 
     # Data params
     parser.add_argument("--period", type=str, default="5y", help="Stock data period (1mo, 3mo, 1y, 2y, 5y, max)")
     parser.add_argument("--crypto-days", type=int, default=1095, help="Days of crypto history (default 3 years)")
+    parser.add_argument("--fx-days", type=int, default=1095, help="Days of FX history (default 3 years)")
+    parser.add_argument("--futures-days", type=int, default=730, help="Days of futures history (default 2 years)")
     parser.add_argument("--poly-days", type=int, default=60, help="Days of Polymarket history")
     parser.add_argument("--interval", type=str, default="1d", help="Bar interval (1d, 1h, 5m)")
 
@@ -770,6 +940,21 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
+
+    # Load full watchlist from config/watchlist.yaml if --watchlist flag is set
+    if args.watchlist:
+        watchlist_path = Path(__file__).resolve().parents[2] / "config" / "watchlist.yaml"
+        if watchlist_path.exists():
+            with open(watchlist_path) as f:
+                wl = yaml.safe_load(f)
+            tickers = wl.get("tickers", [])
+            if tickers:
+                # Merge with any explicitly passed --stocks (explicit wins for dedup)
+                existing = set(args.stocks)
+                args.stocks = list(existing) + [t for t in tickers if t not in existing]
+                print(f"  Watchlist loaded: {len(args.stocks)} tickers from {watchlist_path.name}")
+        else:
+            print(f"  WARNING: Watchlist not found at {watchlist_path}")
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -846,6 +1031,24 @@ def main():
                 args.walk_forward, args.cpcv,
                 args.holdout_start, args.feature_importance,
             ))
+
+    if args.fx:
+        print(f"\n{'═' * 60}")
+        print(f"  FX PAIRS: {', '.join(args.fx)}")
+        print(f"{'═' * 60}")
+        all_results.extend(run_fx_backtest(
+            args.fx, args.fx_days, bt_config,
+            args.walk_forward, args.cpcv,
+        ))
+
+    if args.futures:
+        print(f"\n{'═' * 60}")
+        print(f"  FUTURES: {', '.join(args.futures)}")
+        print(f"{'═' * 60}")
+        all_results.extend(run_futures_backtest(
+            args.futures, args.futures_days, bt_config,
+            args.walk_forward, args.cpcv,
+        ))
 
     if args.polymarket_slugs or args.polymarket_search:
         print(f"\n{'═' * 60}")
@@ -947,10 +1150,13 @@ def main():
             }, f, indent=2, default=str)
         print(f"\n  Results saved to: {output_path}")
 
-    if not args.stocks and not args.crypto and not args.polymarket_slugs and not args.polymarket_search:
+    if not args.stocks and not args.crypto and not args.fx and not args.futures and not args.polymarket_slugs and not args.polymarket_search:
         print("  No assets specified. Examples:")
         print("    python -m src.backtesting.runner --stocks SPY QQQ AAPL")
+        print("    python -m src.backtesting.runner --watchlist                        # All 67 tickers from watchlist.yaml")
         print("    python -m src.backtesting.runner --crypto BTC/USDT ETH/USDT")
+        print("    python -m src.backtesting.runner --fx EUR/USD GBP/USD USD/JPY       # FX via OANDA")
+        print("    python -m src.backtesting.runner --futures ES NQ GC                 # Futures via IBKR or ETF proxy")
         print("    python -m src.backtesting.runner --stocks SPY --crypto BTC/USDT --optimize --ai-eval")
         print("    python -m src.backtesting.runner --polymarket-search 'bitcoin'")
 

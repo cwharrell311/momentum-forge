@@ -12,14 +12,19 @@ on:
   workflow_dispatch:
     inputs:
       stocks:
-        description: "All instruments — stocks, ETFs, treasuries, commodities (space-separated)"
+        description: "All instruments — stocks, ETFs, treasuries, commodities (space-separated). Leave empty to use full watchlist.yaml (80 tickers)."
         required: false
-        default: "SPY QQQ IWM DIA TLT IEF SHY HYG GLD SLV USO UNG XLF XLE XLK XLV SMH TQQQ SOXL EEM AAPL NVDA TSLA META AMZN MSFT AMD JPM"
+        default: ""
         type: string
       crypto:
         description: "Crypto pairs (space-separated)"
         required: false
         default: "BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT LINK/USDT DOT/USDT MATIC/USDT"
+        type: string
+      futures:
+        description: "Futures symbols — uses ETF proxies in CI (space-separated)"
+        required: false
+        default: "ES NQ GC CL ZB ZN"
         type: string
       period:
         description: "Stock data period"
@@ -86,12 +91,16 @@ jobs:
 
       - name: Run stock backtest
         run: |
-          STOCKS="${{ inputs.stocks || 'SPY QQQ IWM DIA TLT IEF SHY HYG GLD SLV USO XLF XLE XLK SMH TQQQ EEM AAPL NVDA TSLA META AMZN MSFT AMD JPM' }}"
+          STOCKS="${{ inputs.stocks }}"
           PERIOD="${{ inputs.period || '10y' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"
 
-          ARGS="--stocks $STOCKS --period $PERIOD --capital $CAPITAL --output results-stocks.json"
+          if [ -z "$STOCKS" ]; then
+            ARGS="--watchlist --period $PERIOD --capital $CAPITAL --output results-stocks.json"
+          else
+            ARGS="--stocks $STOCKS --period $PERIOD --capital $CAPITAL --output results-stocks.json"
+          fi
 
           if [ "$MODE" = "walk-forward" ]; then
             ARGS="$ARGS --walk-forward --windows 5"
