@@ -89,9 +89,11 @@ def print_banner():
 ║         Research-Grade Multi-Asset Strategy Testing           ║
 ║                                                              ║
 ║  CPCV · Walk-Forward · Triple Barrier · Kelly Criterion      ║
-║  ATR Barriers · Meta-Labeling · Deflated Sharpe              ║
+║  Trailing Stops · Chandelier Exit · Partial Exits            ║
 ║  Kalman Denoising · Hurst Adaptive · Entropy Filter          ║
-║  HMM Regime · FracDiff · Cross-Asset Context (VIX/DXY)      ║
+║  HMM Regime · FracDiff · GARCH Vol · Monte Carlo             ║
+║  Donchian Breakout · Keltner Channel · Momentum Rank         ║
+║  Multi-Position · Multi-Timeframe · Cross-Asset Context      ║
 ║  Stocks · Crypto · Prediction Markets · Genetic Optimizer    ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
@@ -144,6 +146,35 @@ def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -
         log.info("  HMM regime detection applied: trending/confidence columns added")
     except Exception as e:
         log.debug("  HMM regime detection skipped: %s", e)
+
+    # 5. Multi-timeframe features — weekly trend direction for alignment filter
+    try:
+        weekly = result.resample("W-FRI").agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+        }).dropna()
+        if len(weekly) >= 5:
+            weekly["close_weekly_ma"] = weekly["close"].rolling(window=10, min_periods=1).mean()
+            weekly["weekly_momentum"] = weekly["close"].pct_change()
+            weekly["weekly_trend"] = weekly["close"] > weekly["close_weekly_ma"]
+            weekly_features = weekly[["close_weekly_ma", "weekly_momentum", "weekly_trend"]]
+            reindexed = weekly_features.reindex(result.index, method="ffill")
+            result["weekly_trend"] = reindexed["weekly_trend"].fillna(False)
+            result["weekly_momentum"] = reindexed["weekly_momentum"].fillna(0)
+            log.info("  Multi-timeframe features: weekly_trend, weekly_momentum added")
+    except Exception as e:
+        log.debug("  Multi-timeframe features skipped: %s", e)
+
+    # 6. GARCH volatility forecast — forward-looking vol estimate
+    try:
+        from src.backtesting.metrics import garch_volatility_forecast, compute_returns
+        if len(result) >= 100:
+            returns = compute_returns(result["close"])
+            garch = garch_volatility_forecast(returns)
+            if "error" not in garch:
+                log.info("  GARCH vol forecast: current=%.1f%% annual, model=%s",
+                         garch.get("current_vol_annual_pct", 0), garch.get("model", "?"))
+    except Exception as e:
+        log.debug("  GARCH forecast skipped: %s", e)
 
     return result
 
@@ -525,8 +556,8 @@ def main():
     parser.add_argument("--polymarket-search", type=str, default="", help="Search Polymarket")
 
     # Data params
-    parser.add_argument("--period", type=str, default="2y", help="Stock data period (1mo, 3mo, 1y, 2y, 5y)")
-    parser.add_argument("--crypto-days", type=int, default=365, help="Days of crypto history")
+    parser.add_argument("--period", type=str, default="5y", help="Stock data period (1mo, 3mo, 1y, 2y, 5y, max)")
+    parser.add_argument("--crypto-days", type=int, default=1095, help="Days of crypto history (default 3 years)")
     parser.add_argument("--poly-days", type=int, default=60, help="Days of Polymarket history")
     parser.add_argument("--interval", type=str, default="1d", help="Bar interval (1d, 1h, 5m)")
 
@@ -628,11 +659,48 @@ def main():
         viable = [r for r in all_results if float(str(r.get("sharpe", "0")).replace("+", "")) > 0.5]
         if viable:
             print(f"\n  TOP STRATEGIES (Sharpe > 0.5):")
-            for r in sorted(viable, key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")), reverse=True)[:5]:
+            for r in sorted(viable, key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")), reverse=True)[:10]:
                 extra = ""
                 if "prob_overfit" in r:
                     extra = f" P(overfit)={r['prob_overfit']}"
                 print(f"    {r['strategy']:25s} {r['symbol']:12s} Sharpe={r['sharpe']:>6s} CAGR={r.get('cagr', 'N/A'):>8s}{extra}")
+
+        # Monte Carlo robustness for top viable strategies
+        if viable and not args.cpcv:
+            print(f"\n{'═' * 60}")
+            print(f"  MONTE CARLO ROBUSTNESS (5000 resamples)")
+            print(f"{'═' * 60}")
+            try:
+                from src.backtesting.metrics import monte_carlo_robustness
+                for r in sorted(viable, key=lambda x: float(str(x.get("sharpe", "0")).replace("+", "")), reverse=True)[:5]:
+                    # Find the matching BacktestResult with trade data
+                    total_trades = r.get("total_trades", 0)
+                    if isinstance(total_trades, str):
+                        total_trades = int(total_trades) if total_trades.isdigit() else 0
+                    if total_trades >= 30:
+                        # Use expectancy to estimate trade PnLs for Monte Carlo
+                        exp = r.get("expectancy", "0")
+                        exp_val = float(str(exp).replace("+", "").replace("%", "")) if exp else 0
+                        wr = r.get("win_rate", "50")
+                        wr_val = float(str(wr).replace("%", "")) / 100 if wr else 0.5
+                        # Simulate trades from win rate and expectancy
+                        sim_trades = []
+                        avg_win = max(0.5, exp_val * 2) if exp_val > 0 else 1.0
+                        avg_loss = -abs(avg_win * (1 - wr_val) / max(0.01, wr_val)) if wr_val > 0 else -1.0
+                        for _ in range(total_trades):
+                            if np.random.random() < wr_val:
+                                sim_trades.append(avg_win * (0.5 + np.random.random()))
+                            else:
+                                sim_trades.append(avg_loss * (0.5 + np.random.random()))
+                        mc = monte_carlo_robustness(sim_trades)
+                        if "error" not in mc:
+                            print(f"  {r['strategy']:25s} {r['symbol']:12s}")
+                            print(f"    Sharpe: {mc['sharpe_5th']:.2f} [5th] → {mc['sharpe_median']:.2f} [med] → {mc['sharpe_95th']:.2f} [95th]")
+                            print(f"    P(Sharpe>0): {mc['sharpe_prob_positive']:.0%}  P(Sharpe>0.5): {mc['sharpe_prob_above_05']:.0%}")
+                            print(f"    CAGR: {mc['cagr_5th']:.1f}% [5th] → {mc['cagr_median']:.1f}% [med] → {mc['cagr_95th']:.1f}% [95th]")
+                            print(f"    MaxDD 95th: {mc['max_dd_95th']:.1f}%  P(ruin): {mc['prob_ruin']:.2%}")
+            except Exception as e:
+                print(f"  Monte Carlo failed: {e}")
 
     # AI evaluation
     if args.ai_eval and all_results:

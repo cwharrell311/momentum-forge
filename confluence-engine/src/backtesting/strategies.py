@@ -1087,6 +1087,252 @@ class EntropyRegimeStrategy(BaseStrategy):
 
 
 # ═══════════════════════════════════════════════════════════════
+# BREAKOUT & TREND STRATEGIES
+# ═══════════════════════════════════════════════════════════════
+
+
+class DonchianBreakout(BaseStrategy):
+    """
+    Donchian Channel Breakout — the Turtle Trading system.
+
+    Buy when price breaks above the highest high of N periods.
+    Sell when price breaks below the lowest low of N periods.
+
+    This is the simplest trend-following strategy and one of the most
+    robust historically. Richard Dennis made $400M+ with this approach.
+
+    Uses a shorter exit channel than entry channel (asymmetric channels)
+    to let winners run while cutting losers quickly.
+
+    Parameters: entry_period, exit_period.
+    """
+
+    def __init__(self, entry_period: int = 20, exit_period: int = 10):
+        self.entry_period = entry_period
+        self.exit_period = exit_period
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="donchian_breakout",
+            asset_classes=["stock", "crypto"],
+            param_count=2,
+            param_ranges={"entry_period": (10, 55), "exit_period": (5, 20)},
+            description="Turtle-style Donchian channel breakout — the original trend-following system",
+        )
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        if len(df) < self.entry_period + 2:
+            return signals
+
+        highs = df["high"].values
+        lows = df["low"].values
+        closes = df["close"].values
+
+        for i in range(self.entry_period + 1, len(df)):
+            upper_channel = np.max(highs[i - self.entry_period:i])
+            lower_channel = np.min(lows[i - self.entry_period:i])
+
+            # ATR for confidence scaling
+            recent_tr = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1]))
+                         for j in range(max(1, i - 14), i + 1)]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.02
+            atr_pct = atr / closes[i] * 100
+
+            # Breakout above upper channel
+            if closes[i] > upper_channel and closes[i - 1] <= upper_channel:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.LONG,
+                    confidence=min(1.0, (closes[i] - upper_channel) / atr) if atr > 0 else 0.5,
+                    reason=f"Donchian breakout long: close={closes[i]:.2f} > upper={upper_channel:.2f}",
+                    stop_loss_pct=max(1.5, atr_pct * 2),
+                    take_profit_pct=max(3.0, atr_pct * 5),  # Wide target for trend
+                ))
+            # Breakdown below lower channel
+            elif closes[i] < lower_channel and closes[i - 1] >= lower_channel:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.SHORT,
+                    confidence=min(1.0, (lower_channel - closes[i]) / atr) if atr > 0 else 0.5,
+                    reason=f"Donchian breakdown short: close={closes[i]:.2f} < lower={lower_channel:.2f}",
+                    stop_loss_pct=max(1.5, atr_pct * 2),
+                    take_profit_pct=max(3.0, atr_pct * 5),
+                ))
+
+        return signals
+
+
+class MomentumRankRotation(BaseStrategy):
+    """
+    Momentum Rank Rotation — cross-sectional relative strength.
+
+    Ranks assets by trailing return and only goes long on those
+    in the top momentum tier. This is the Jegadeesh & Titman (1993)
+    momentum factor applied at the asset level.
+
+    For single-asset backtesting, this acts as a momentum regime filter:
+    only trades when the asset's momentum is in the top percentile
+    of its own rolling distribution.
+
+    Parameters: lookback_period, momentum_threshold.
+    """
+
+    def __init__(self, lookback_period: int = 60, momentum_threshold: float = 0.7):
+        self.lookback_period = lookback_period
+        self.momentum_threshold = momentum_threshold  # Percentile threshold
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="momentum_rank_rotation",
+            asset_classes=["stock", "crypto"],
+            param_count=2,
+            param_ranges={"lookback_period": (20, 120), "momentum_threshold": (0.5, 0.9)},
+            description="Cross-sectional momentum rank — only trade top-percentile momentum",
+        )
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        min_bars = self.lookback_period + 60  # Need history for percentile calc
+        if len(df) < min_bars:
+            return signals
+
+        closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
+
+        # Pre-compute all trailing returns
+        for i in range(min_bars, len(df)):
+            # Current momentum
+            if closes[i - self.lookback_period] <= 0:
+                continue
+            current_mom = (closes[i] - closes[i - self.lookback_period]) / closes[i - self.lookback_period]
+
+            # Historical momentum distribution (rolling)
+            hist_moms = []
+            for j in range(i - 59, i + 1):
+                if j >= self.lookback_period and closes[j - self.lookback_period] > 0:
+                    m = (closes[j] - closes[j - self.lookback_period]) / closes[j - self.lookback_period]
+                    hist_moms.append(m)
+
+            if len(hist_moms) < 20:
+                continue
+
+            # Percentile rank of current momentum
+            rank = sum(1 for m in hist_moms if m <= current_mom) / len(hist_moms)
+
+            # ATR for stops
+            recent_tr = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1]))
+                         for j in range(max(1, i - 14), i + 1)]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.02
+            atr_pct = atr / closes[i] * 100
+
+            # Top percentile momentum = go long
+            if rank >= self.momentum_threshold and current_mom > 0:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.LONG,
+                    confidence=min(1.0, rank * abs(current_mom) * 10),
+                    reason=f"Momentum rank long: rank={rank:.2f} mom={current_mom:.3f}",
+                    stop_loss_pct=max(2.0, atr_pct * 2.5),
+                    take_profit_pct=max(4.0, atr_pct * 5),
+                ))
+            # Bottom percentile = go short
+            elif rank <= (1.0 - self.momentum_threshold) and current_mom < 0:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.SHORT,
+                    confidence=min(1.0, (1 - rank) * abs(current_mom) * 10),
+                    reason=f"Momentum rank short: rank={rank:.2f} mom={current_mom:.3f}",
+                    stop_loss_pct=max(2.0, atr_pct * 2.5),
+                    take_profit_pct=max(4.0, atr_pct * 5),
+                ))
+
+        return signals
+
+
+class VolatilityBreakoutKeltner(BaseStrategy):
+    """
+    Keltner Channel Volatility Breakout.
+
+    Keltner Channels = EMA ± ATR * multiplier. Unlike Bollinger Bands
+    (which use standard deviation), Keltner uses ATR, making them more
+    responsive to directional volatility.
+
+    Entry: price closes outside the channel
+    Exit: price returns inside the channel OR trailing stop
+
+    This captures volatility expansion breakouts — the same concept
+    as a "squeeze" (Bollinger inside Keltner, then breakout).
+
+    Parameters: ema_period, atr_mult.
+    """
+
+    def __init__(self, ema_period: int = 20, atr_mult: float = 2.0):
+        self.ema_period = ema_period
+        self.atr_mult = atr_mult
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="keltner_breakout",
+            asset_classes=["stock", "crypto"],
+            param_count=2,
+            param_ranges={"ema_period": (10, 40), "atr_mult": (1.5, 3.5)},
+            description="Keltner channel breakout — ATR-based volatility expansion plays",
+        )
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        min_bars = self.ema_period + 15
+        if len(df) < min_bars:
+            return signals
+
+        closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
+
+        # Compute EMA
+        ema = np.zeros(len(closes))
+        ema[0] = closes[0]
+        alpha = 2.0 / (self.ema_period + 1)
+        for j in range(1, len(closes)):
+            ema[j] = alpha * closes[j] + (1 - alpha) * ema[j - 1]
+
+        for i in range(min_bars, len(df)):
+            # ATR
+            recent_tr = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1]))
+                         for j in range(max(1, i - 14), i + 1)]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.02
+            atr_pct = atr / closes[i] * 100
+
+            upper = ema[i] + self.atr_mult * atr
+            lower = ema[i] - self.atr_mult * atr
+
+            # Breakout above upper Keltner
+            if closes[i] > upper and closes[i - 1] <= ema[i - 1] + self.atr_mult * atr:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.LONG,
+                    confidence=min(1.0, (closes[i] - upper) / atr) if atr > 0 else 0.5,
+                    reason=f"Keltner breakout long: close={closes[i]:.2f} > upper={upper:.2f}",
+                    stop_loss_pct=max(1.0, atr_pct * 1.5),
+                    take_profit_pct=max(3.0, atr_pct * 4),
+                ))
+            # Breakdown below lower Keltner
+            elif closes[i] < lower and closes[i - 1] >= ema[i - 1] - self.atr_mult * atr:
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.SHORT,
+                    confidence=min(1.0, (lower - closes[i]) / atr) if atr > 0 else 0.5,
+                    reason=f"Keltner breakdown short: close={closes[i]:.2f} < lower={lower:.2f}",
+                    stop_loss_pct=max(1.0, atr_pct * 1.5),
+                    take_profit_pct=max(3.0, atr_pct * 4),
+                ))
+
+        return signals
+
+
+# ═══════════════════════════════════════════════════════════════
 # STRATEGY REGISTRY
 # ═══════════════════════════════════════════════════════════════
 
@@ -1099,6 +1345,7 @@ def get_all_strategies(asset_class: str | None = None) -> list[BaseStrategy]:
     DualMomentum expanded with longer lookback periods (60/90/120 day).
     CryptoMomentum expanded with tuned parameters.
     Added: DenoisedMomentum (Kalman-filtered), HurstAdaptive, EntropyRegimeStrategy.
+    Added: DonchianBreakout (Turtle), MomentumRankRotation (cross-sectional), KeltnerBreakout.
     """
     all_strategies = [
         # Stocks — momentum-focused (ORB removed: needs intraday bars)
@@ -1134,6 +1381,18 @@ def get_all_strategies(asset_class: str | None = None) -> list[BaseStrategy]:
         # Entropy regime — only trade when market is predictable
         EntropyRegimeStrategy(entropy_lookback=50, entropy_threshold=0.7, momentum_period=20),
         EntropyRegimeStrategy(entropy_lookback=80, entropy_threshold=0.65, momentum_period=30),
+        # Trend-following — Turtle system (Donchian breakout)
+        DonchianBreakout(entry_period=20, exit_period=10),         # Classic Turtle
+        DonchianBreakout(entry_period=55, exit_period=20),         # Long-term Turtle
+        DonchianBreakout(entry_period=10, exit_period=5),          # Short-term breakout
+        # Cross-sectional momentum — rank-based
+        MomentumRankRotation(lookback_period=60, momentum_threshold=0.7),   # 3-month momentum
+        MomentumRankRotation(lookback_period=120, momentum_threshold=0.75), # 6-month momentum
+        MomentumRankRotation(lookback_period=20, momentum_threshold=0.8),   # 1-month fast rotation
+        # Keltner channel — ATR-based volatility breakout
+        VolatilityBreakoutKeltner(ema_period=20, atr_mult=2.0),    # Standard
+        VolatilityBreakoutKeltner(ema_period=10, atr_mult=1.5),    # Tight/fast
+        VolatilityBreakoutKeltner(ema_period=30, atr_mult=2.5),    # Wide/slow
     ]
 
     if asset_class:

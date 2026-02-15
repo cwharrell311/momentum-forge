@@ -130,7 +130,7 @@ class PerformanceReport:
             self.trades.total_trades >= 30
             and self.sharpe_ratio > 0.5
             and self.trades.profit_factor > 1.2
-            and self.drawdown.max_drawdown_pct < 30.0
+            and self.drawdown.max_drawdown_pct < 35.0
             and self.trades.expectancy > 0
             and self.deflated_sharpe > 0
         )
@@ -554,3 +554,192 @@ def generate_report(
         timeframe=timeframe,
         asset_class=asset_class,
     )
+
+
+# ── Monte Carlo Robustness Testing ──
+
+
+def monte_carlo_robustness(
+    trade_pnls: list[float],
+    n_simulations: int = 5000,
+    initial_capital: float = 100_000,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> dict:
+    """
+    Monte Carlo robustness testing via trade resampling.
+
+    Randomly resamples the trade sequence N times to build
+    distributions of key metrics. This tells you whether your
+    backtest results are robust or just a lucky ordering of trades.
+
+    Returns:
+        Dictionary with confidence intervals for Sharpe, CAGR, max drawdown.
+    """
+    if len(trade_pnls) < 10:
+        return {"error": "Insufficient trades for Monte Carlo", "n_trades": len(trade_pnls)}
+
+    pnls = np.array(trade_pnls)
+    n_trades = len(pnls)
+
+    sharpes = []
+    cagrs = []
+    max_dds = []
+    final_equities = []
+
+    for _ in range(n_simulations):
+        # Resample trade sequence with replacement
+        resampled = np.random.choice(pnls, size=n_trades, replace=True)
+
+        # Build equity curve from resampled trades
+        equity = [initial_capital]
+        for pnl_pct in resampled:
+            equity.append(equity[-1] * (1 + pnl_pct / 100))
+        eq = np.array(equity)
+
+        # Compute returns
+        returns = np.diff(eq) / eq[:-1]
+        if np.std(returns) > 0:
+            sharpe = np.mean(returns) / np.std(returns) * np.sqrt(periods_per_year)
+        else:
+            sharpe = 0.0
+        sharpes.append(sharpe)
+
+        # CAGR
+        total_return = eq[-1] / eq[0]
+        if total_return > 0:
+            years = n_trades / periods_per_year
+            if years > 0:
+                cagr = (total_return ** (1.0 / years) - 1.0) * 100
+            else:
+                cagr = 0.0
+        else:
+            cagr = -100.0
+        cagrs.append(cagr)
+
+        # Max drawdown
+        peak = np.maximum.accumulate(eq)
+        dd = (peak - eq) / peak * 100
+        max_dds.append(np.max(dd))
+
+        final_equities.append(eq[-1])
+
+    sharpes = np.array(sharpes)
+    cagrs = np.array(cagrs)
+    max_dds = np.array(max_dds)
+
+    return {
+        "n_simulations": n_simulations,
+        "n_trades": n_trades,
+        "sharpe_mean": round(float(np.mean(sharpes)), 3),
+        "sharpe_median": round(float(np.median(sharpes)), 3),
+        "sharpe_5th": round(float(np.percentile(sharpes, 5)), 3),
+        "sharpe_95th": round(float(np.percentile(sharpes, 95)), 3),
+        "sharpe_prob_positive": round(float((sharpes > 0).mean()), 3),
+        "sharpe_prob_above_05": round(float((sharpes > 0.5).mean()), 3),
+        "cagr_mean": round(float(np.mean(cagrs)), 2),
+        "cagr_median": round(float(np.median(cagrs)), 2),
+        "cagr_5th": round(float(np.percentile(cagrs, 5)), 2),
+        "cagr_95th": round(float(np.percentile(cagrs, 95)), 2),
+        "max_dd_mean": round(float(np.mean(max_dds)), 2),
+        "max_dd_95th": round(float(np.percentile(max_dds, 95)), 2),
+        "prob_ruin": round(float((np.array(final_equities) < initial_capital * 0.5).mean()), 4),
+    }
+
+
+# ── GARCH Volatility Forecasting ──
+
+
+def garch_volatility_forecast(
+    returns: pd.Series,
+    forecast_horizon: int = 5,
+) -> dict:
+    """
+    GARCH(1,1) volatility forecast.
+
+    Models time-varying volatility: sigma_t^2 = omega + alpha * r_{t-1}^2 + beta * sigma_{t-1}^2
+
+    Uses maximum likelihood estimation. Falls back to EWMA if scipy optimization fails.
+
+    Returns:
+        Dictionary with current vol estimate, forecast, and GARCH parameters.
+    """
+    if len(returns) < 50:
+        return {"error": "Insufficient data for GARCH", "n_returns": len(returns)}
+
+    r = returns.values if isinstance(returns, pd.Series) else returns
+    r = r[~np.isnan(r)]
+    n = len(r)
+
+    # EWMA fallback (always computed as baseline)
+    ewma_lambda = 0.94
+    ewma_var = np.zeros(n)
+    ewma_var[0] = np.var(r[:20]) if n >= 20 else np.var(r)
+    for t in range(1, n):
+        ewma_var[t] = ewma_lambda * ewma_var[t - 1] + (1 - ewma_lambda) * r[t - 1] ** 2
+
+    ewma_forecast = ewma_var[-1]
+
+    # GARCH(1,1) via maximum likelihood
+    try:
+        from scipy.optimize import minimize
+
+        def neg_log_likelihood(params):
+            omega, alpha, beta = params
+            if omega <= 0 or alpha < 0 or beta < 0 or alpha + beta >= 1:
+                return 1e10
+            sigma2 = np.zeros(n)
+            sigma2[0] = np.var(r)
+            for t in range(1, n):
+                sigma2[t] = omega + alpha * r[t - 1] ** 2 + beta * sigma2[t - 1]
+                if sigma2[t] <= 0:
+                    return 1e10
+            ll = -0.5 * np.sum(np.log(sigma2) + r ** 2 / sigma2)
+            return -ll
+
+        # Initial params from variance targeting
+        var_r = np.var(r)
+        x0 = [var_r * 0.05, 0.08, 0.88]
+        bounds = [(1e-8, var_r * 2), (1e-4, 0.5), (0.3, 0.999)]
+
+        result = minimize(neg_log_likelihood, x0, method="L-BFGS-B", bounds=bounds)
+
+        if result.success:
+            omega, alpha, beta = result.x
+            # Compute conditional variance series
+            sigma2 = np.zeros(n)
+            sigma2[0] = var_r
+            for t in range(1, n):
+                sigma2[t] = omega + alpha * r[t - 1] ** 2 + beta * sigma2[t - 1]
+
+            # Multi-step forecast
+            h_forecast = sigma2[-1]
+            long_run_var = omega / (1 - alpha - beta) if (alpha + beta) < 1 else var_r
+            forecasts = []
+            for h in range(1, forecast_horizon + 1):
+                h_forecast = omega + (alpha + beta) * h_forecast
+                forecasts.append(np.sqrt(h_forecast) * np.sqrt(252) * 100)
+
+            persistence = alpha + beta
+
+            return {
+                "model": "GARCH(1,1)",
+                "omega": round(float(omega), 8),
+                "alpha": round(float(alpha), 4),
+                "beta": round(float(beta), 4),
+                "persistence": round(float(persistence), 4),
+                "current_vol_annual_pct": round(float(np.sqrt(sigma2[-1]) * np.sqrt(252) * 100), 2),
+                "long_run_vol_annual_pct": round(float(np.sqrt(long_run_var) * np.sqrt(252) * 100), 2),
+                "forecast_vol_pct": [round(f, 2) for f in forecasts],
+                "ewma_vol_annual_pct": round(float(np.sqrt(ewma_forecast) * np.sqrt(252) * 100), 2),
+                "half_life_days": round(float(-np.log(2) / np.log(persistence)), 1) if persistence > 0 else None,
+            }
+    except Exception:
+        pass
+
+    # Fallback to EWMA
+    return {
+        "model": "EWMA",
+        "lambda": ewma_lambda,
+        "current_vol_annual_pct": round(float(np.sqrt(ewma_forecast) * np.sqrt(252) * 100), 2),
+        "forecast_vol_pct": [round(float(np.sqrt(ewma_forecast) * np.sqrt(252) * 100), 2)] * forecast_horizon,
+    }

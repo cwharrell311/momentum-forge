@@ -120,7 +120,7 @@ class RiskManager:
     def __init__(
         self,
         max_daily_loss_pct: float = 3.0,      # Stop trading after 3% daily loss
-        max_drawdown_pct: float = 15.0,        # Halt strategy if DD > 15%
+        max_drawdown_pct: float = 25.0,        # Halt strategy if DD > 25%
         max_open_positions: int = 6,            # Max concurrent positions
         max_correlation: float = 0.70,          # Don't stack correlated > 0.7
         consecutive_loss_limit: int = 5,        # Pause after 5 straight losses
