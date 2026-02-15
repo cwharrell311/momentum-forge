@@ -1,0 +1,194 @@
+name: Strategy Discovery
+
+# Runs the full autonomous discovery pipeline:
+# 1. Backtest all strategies across all instruments
+# 2. Walk-forward validate (anti-curve-fitting)
+# 3. Rank and select winning strategies
+# 4. Save deployment state as artifact
+
+on:
+  # Weekly Sunday reoptimization
+  schedule:
+    - cron: "0 6 * * 0"  # Every Sunday at 6am UTC (1am ET)
+
+  # Manual trigger with custom instruments
+  workflow_dispatch:
+    inputs:
+      instruments:
+        description: "Instruments to backtest (space-separated, blank = full universe)"
+        required: false
+        default: ""
+        type: string
+      min_sharpe:
+        description: "Minimum Sharpe ratio to deploy"
+        required: false
+        default: "0.8"
+        type: string
+      max_strategies:
+        description: "Max strategies to deploy"
+        required: false
+        default: "8"
+        type: string
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: 1
+  PYTHONDONTWRITEBYTECODE: 1
+
+jobs:
+  discover:
+    name: "Full Strategy Discovery"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: confluence-engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: confluence-engine/requirements-backtest.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-backtest.txt
+
+      - name: Run autonomous discovery
+        run: |
+          python3 << 'PYEOF'
+          import asyncio
+          import json
+          import logging
+          import sys
+          import os
+
+          logging.basicConfig(
+              level=logging.INFO,
+              format="%(asctime)s %(name)-20s %(levelname)-7s %(message)s",
+              datefmt="%H:%M:%S",
+          )
+
+          from src.services.autonomous_trader import AutonomousTrader
+
+          async def main():
+              instruments_str = os.environ.get("INPUT_INSTRUMENTS", "").strip()
+              instruments = instruments_str.split() if instruments_str else None
+
+              trader = AutonomousTrader(
+                  paper_mode=True,
+                  min_sharpe_to_deploy=float(os.environ.get("INPUT_MIN_SHARPE", "0.8")),
+                  max_strategies=int(os.environ.get("INPUT_MAX_STRATEGIES", "8")),
+              )
+
+              print("=" * 60)
+              print("  MOMENTUM FORGE — AUTONOMOUS DISCOVERY")
+              print("=" * 60)
+
+              # Discover
+              candidates = await trader.discover_strategies(instruments)
+
+              if not candidates:
+                  print("\nNo viable strategies found.")
+                  with open("discovery-results.json", "w") as f:
+                      json.dump({"status": "no_candidates"}, f)
+                  return
+
+              print(f"\n{'=' * 60}")
+              print(f"  {len(candidates)} CANDIDATES FOUND")
+              print(f"{'=' * 60}")
+
+              for i, c in enumerate(candidates[:20], 1):
+                  print(f"  #{i:2d} {c.strategy_name:<30s} Sharpe={c.expected_sharpe:.2f} "
+                        f"CAGR={c.expected_cagr_pct:+.1f}% WF={c.wf_efficiency:.2f} "
+                        f"DD={c.expected_max_dd_pct:.1f}%")
+
+              # Deploy top strategies
+              deployed = trader.deploy_strategies(candidates)
+
+              print(f"\n{'=' * 60}")
+              print(f"  {len(deployed)} STRATEGIES DEPLOYED")
+              print(f"{'=' * 60}")
+
+              for d in deployed:
+                  print(f"  [{d.status.value:5s}] {d.strategy_name:<30s} "
+                        f"on {', '.join(d.instruments)}")
+
+              # Save state
+              trader.save_state("autonomous_state.json")
+
+              # Save results for artifact
+              results = {
+                  "status": "ok",
+                  "timestamp": __import__("datetime").datetime.now(
+                      __import__("datetime").timezone.utc
+                  ).isoformat(),
+                  "candidates": len(candidates),
+                  "deployed": len(deployed),
+                  "strategies": [s.to_dict() for s in deployed],
+                  "all_candidates": [s.to_dict() for s in candidates[:30]],
+              }
+
+              with open("discovery-results.json", "w") as f:
+                  json.dump(results, f, indent=2, default=str)
+
+              print(f"\nResults saved to discovery-results.json")
+
+          asyncio.run(main())
+          PYEOF
+        env:
+          INPUT_INSTRUMENTS: ${{ inputs.instruments || '' }}
+          INPUT_MIN_SHARPE: ${{ inputs.min_sharpe || '0.8' }}
+          INPUT_MAX_STRATEGIES: ${{ inputs.max_strategies || '8' }}
+
+      - name: Post results to summary
+        if: always()
+        run: |
+          echo "## Strategy Discovery Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f discovery-results.json ]; then
+            STATUS=$(python3 -c "import json; print(json.load(open('discovery-results.json')).get('status','unknown'))")
+            CANDIDATES=$(python3 -c "import json; print(json.load(open('discovery-results.json')).get('candidates', 0))")
+            DEPLOYED=$(python3 -c "import json; print(json.load(open('discovery-results.json')).get('deployed', 0))")
+
+            echo "**Status:** $STATUS | **Candidates:** $CANDIDATES | **Deployed:** $DEPLOYED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### Deployed Strategies" >> $GITHUB_STEP_SUMMARY
+            echo "| Strategy | Instruments | Sharpe | CAGR | Max DD | WF Efficiency |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------------|--------|------|--------|---------------|" >> $GITHUB_STEP_SUMMARY
+            python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          import json
+          data = json.load(open('discovery-results.json'))
+          for s in data.get('strategies', []):
+              exp = s.get('expected', {})
+              instr = ', '.join(s.get('instruments', []))
+              print(f"| {s.get('strategy_name','?')} | {instr} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('max_dd_pct',0):.1f}% | {exp.get('wf_efficiency',0):.2f} |")
+          PYEOF
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### All Candidates (Top 20)" >> $GITHUB_STEP_SUMMARY
+            echo "| # | Strategy | Sharpe | CAGR | WF Eff | Win Rate |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|----------|--------|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+            python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          import json
+          data = json.load(open('discovery-results.json'))
+          for i, s in enumerate(data.get('all_candidates', [])[:20], 1):
+              exp = s.get('expected', {})
+              print(f"| {i} | {s.get('strategy_name','?')} | {exp.get('sharpe',0):.2f} | {exp.get('cagr_pct',0):+.1f}% | {exp.get('wf_efficiency',0):.2f} | {exp.get('win_rate',0):.0f}% |")
+          PYEOF
+          else
+            echo "No results file found." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload discovery results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-results
+          path: |
+            confluence-engine/discovery-results.json
+            confluence-engine/autonomous_state.json
+          retention-days: 90

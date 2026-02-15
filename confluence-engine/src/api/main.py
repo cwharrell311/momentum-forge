@@ -18,10 +18,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
-from src.api.dependencies import cleanup_app, init_app
-from src.api.routes import broker, confluence, performance, regime, signals, system, trades, watchlist
+from src.api.dependencies import cleanup_app, init_ai, init_app
+from src.api.routes import broker, command_center, confluence, performance, regime, signals, system, trades, trading_engine, watchlist
 from src.config import get_settings
 from src.services.scheduler import start_scheduler, stop_scheduler
 
@@ -72,6 +72,24 @@ async def lifespan(app: FastAPI):
         logger.info(f"Alpaca client initialized ({'paper' if 'paper' in settings.alpaca_base_url else 'LIVE'} trading)")
     else:
         logger.info("Alpaca not configured — add ALPACA_API_KEY to .env for paper trading")
+
+    # Initialize AI Command Center (Claude + OpenAI routing)
+    init_ai(
+        anthropic_api_key=settings.anthropic_api_key,
+        openai_api_key=settings.openai_api_key,
+        default_provider=settings.ai_default_provider,
+        claude_model=settings.ai_claude_model,
+        openai_model=settings.ai_openai_model,
+    )
+    ai_providers = []
+    if settings.anthropic_api_key:
+        ai_providers.append("Claude")
+    if settings.openai_api_key:
+        ai_providers.append("OpenAI")
+    if ai_providers:
+        logger.info(f"AI Command Center ready — providers: {', '.join(ai_providers)} (routing: {settings.ai_default_provider})")
+    else:
+        logger.info("AI Command Center initialized — no providers configured (add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env)")
 
     # Create database tables (if PostgreSQL is running)
     try:
@@ -130,6 +148,8 @@ app.include_router(trades.router, prefix="/api/v1/trades", tags=["trades"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
 app.include_router(broker.router, prefix="/api/v1/broker", tags=["broker"])
 app.include_router(performance.router, prefix="/api/v1/performance", tags=["performance"])
+app.include_router(command_center.router, prefix="/api/v1/ai", tags=["ai-command-center"])
+app.include_router(trading_engine.router, prefix="/api/v1/engine", tags=["trading-engine"])
 
 
 # ── Dashboard ──
@@ -137,10 +157,14 @@ app.include_router(performance.router, prefix="/api/v1/performance", tags=["perf
 _dashboard_path = Path(__file__).parent.parent / "ui" / "dashboard.html"
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/", include_in_schema=False)
 async def dashboard():
     """Serve the main dashboard. Open http://localhost:8000 in your browser."""
-    return _dashboard_path.read_text()
+    return Response(
+        content=_dashboard_path.read_text(),
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 # ── Health Check ──

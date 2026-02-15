@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     scan_interval: int = 900  # seconds between full scans (15 min saves API quota)
     universe_discovery: bool = True  # Use UW market flow to find active tickers beyond watchlist
     universe_max_tickers: int = 50  # Max tickers from UW flow (50×7calls×4scans×6.5hrs ≈ 9K/day, under 15K limit)
+    universe_stocks_only: bool = False  # False = include ETFs, treasuries, commodities, all instruments
+
+    # ── AI Command Center ──
+    anthropic_api_key: str = ""            # Claude API key (anthropic.com)
+    openai_api_key: str = ""               # OpenAI API key (platform.openai.com)
+    ai_default_provider: str = "auto"      # "auto", "claude", or "openai"
+    ai_claude_model: str = "claude-sonnet-4-20250514"
+    ai_openai_model: str = "gpt-4o"
+
+    # ── Trading Engine ──
+    engine_tickers: str = "SPY,QQQ,IWM,DIA,TLT,IEF,GLD,SLV,USO,XLF,XLE,XLK,SMH,TQQQ,EEM,AAPL,NVDA,TSLA,META,AMZN,MSFT"  # Default tickers for backtesting (comma-separated)
+    engine_lookback_days: int = 252        # Days of history for backtesting
 
     # ── Auto-Trading ──
     auto_trade_enabled: bool = False       # Master switch — set true to enable
