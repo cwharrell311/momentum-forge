@@ -98,7 +98,7 @@ def print_banner():
 
 
 def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Apply preprocessing pipeline: context merge + signal processing features."""
+    """Apply preprocessing pipeline: context merge + signal processing + fracdiff + regime."""
     from src.backtesting.data_feeds import add_context_to_ohlcv
 
     result = df.copy()
@@ -118,6 +118,32 @@ def _preprocess_data(df: pd.DataFrame, context_df: pd.DataFrame | None = None) -
         log.info("  Signal features added: denoised, kalman, hurst, entropy")
     except Exception as e:
         log.debug("  Signal feature extraction skipped: %s", e)
+
+    # 3. Fractional differentiation — stationary features that preserve memory
+    try:
+        from src.backtesting.fracdiff import add_fracdiff_features
+        result = add_fracdiff_features(result)
+        d_val = result.attrs.get("fracdiff_d", "?")
+        log.info("  FracDiff applied: d=%.2f, close_fracdiff added", d_val)
+    except Exception as e:
+        log.debug("  FracDiff skipped: %s", e)
+
+    # 4. HMM regime detection — adds regime_trending, regime_confidence columns
+    try:
+        from src.backtesting.regime_hmm import fit_regime_detector
+        detector = fit_regime_detector(result)
+        # Vectorize regime states into columns for strategy access
+        trending_probs = []
+        confidences = []
+        for idx in range(len(result)):
+            state = detector.get_regime(idx)
+            trending_probs.append(state.trending_prob)
+            confidences.append(state.confidence)
+        result["regime_trending"] = trending_probs
+        result["regime_confidence"] = confidences
+        log.info("  HMM regime detection applied: trending/confidence columns added")
+    except Exception as e:
+        log.debug("  HMM regime detection skipped: %s", e)
 
     return result
 
