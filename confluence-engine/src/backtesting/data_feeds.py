@@ -130,7 +130,120 @@ def fetch_stock_intraday(
     return OHLCV(df=df, symbol=symbol, asset_class=AssetClass.STOCK, timeframe=interval, source="yfinance")
 
 
-# ── Crypto Data (ccxt / Binance) ──
+# ── Crypto Data (ccxt with exchange fallback + yfinance) ──
+
+# Exchanges to try in order — Binance is blocked in the US (HTTP 451),
+# so we fall through to Kraken, Coinbase, then yfinance.
+_CCXT_EXCHANGE_CHAIN = ["kraken", "coinbasepro", "binance"]
+
+# Map ccxt pair format (BTC/USDT) to yfinance ticker (BTC-USD)
+_CRYPTO_YF_MAP = {
+    "BTC/USDT": "BTC-USD", "BTC/USD": "BTC-USD",
+    "ETH/USDT": "ETH-USD", "ETH/USD": "ETH-USD",
+    "SOL/USDT": "SOL-USD", "SOL/USD": "SOL-USD",
+    "DOGE/USDT": "DOGE-USD", "DOGE/USD": "DOGE-USD",
+    "ADA/USDT": "ADA-USD", "ADA/USD": "ADA-USD",
+    "AVAX/USDT": "AVAX-USD", "AVAX/USD": "AVAX-USD",
+    "LINK/USDT": "LINK-USD", "LINK/USD": "LINK-USD",
+    "DOT/USDT": "DOT-USD", "DOT/USD": "DOT-USD",
+    "MATIC/USDT": "MATIC-USD", "MATIC/USD": "MATIC-USD",
+    "XRP/USDT": "XRP-USD", "XRP/USD": "XRP-USD",
+    "BNB/USDT": "BNB-USD", "BNB/USD": "BNB-USD",
+}
+
+
+def _fetch_crypto_ccxt(
+    symbol: str,
+    timeframe: str,
+    days_back: int,
+) -> pd.DataFrame | None:
+    """Try fetching crypto data from ccxt exchanges (Kraken → Coinbase → Binance)."""
+    try:
+        import ccxt
+    except ImportError:
+        log.warning("ccxt not installed, skipping exchange fetch")
+        return None
+
+    since = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp() * 1000)
+
+    for exchange_id in _CCXT_EXCHANGE_CHAIN:
+        try:
+            exchange_cls = getattr(ccxt, exchange_id, None)
+            if not exchange_cls:
+                continue
+            exchange = exchange_cls({"enableRateLimit": True})
+
+            all_candles = []
+            fetch_since = since
+            limit = 1000
+
+            while True:
+                candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=fetch_since, limit=limit)
+                if not candles:
+                    break
+                all_candles.extend(candles)
+                fetch_since = candles[-1][0] + 1
+                if len(candles) < limit:
+                    break
+
+            if all_candles:
+                df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                df = df.set_index("timestamp")
+                df = df.dropna()
+                log.info("Crypto %s via %s: %d bars", symbol, exchange_id, len(df))
+                return df
+
+        except Exception as e:
+            log.debug("Exchange %s failed for %s: %s", exchange_id, symbol, e)
+            continue
+
+    return None
+
+
+def _fetch_crypto_yfinance(symbol: str, days_back: int) -> pd.DataFrame | None:
+    """Fallback: fetch crypto via yfinance (BTC-USD, ETH-USD, etc.)."""
+    yf_ticker = _CRYPTO_YF_MAP.get(symbol)
+    if not yf_ticker:
+        # Try auto-converting: "BTC/USDT" -> "BTC-USD"
+        base = symbol.split("/")[0] if "/" in symbol else symbol
+        yf_ticker = f"{base}-USD"
+
+    try:
+        import yfinance as yf
+
+        if days_back > 1800:
+            period = "10y"
+        elif days_back > 730:
+            period = "5y"
+        elif days_back > 365:
+            period = "2y"
+        elif days_back > 180:
+            period = "1y"
+        else:
+            period = "6mo"
+        ticker = yf.Ticker(yf_ticker)
+        df = ticker.history(period=period, interval="1d")
+
+        if df.empty:
+            return None
+
+        df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
+        df.index.name = "timestamp"
+        df = df[["open", "high", "low", "close", "volume"]].copy()
+        df = df.dropna()
+
+        if df.index.tz is not None:
+            df.index = df.index.tz_convert("UTC")
+        else:
+            df.index = df.index.tz_localize("UTC")
+
+        log.info("Crypto %s via yfinance (%s): %d bars", symbol, yf_ticker, len(df))
+        return df
+
+    except Exception as e:
+        log.warning("yfinance fallback failed for %s (%s): %s", symbol, yf_ticker, e)
+        return None
 
 
 def fetch_crypto_data(
@@ -139,43 +252,31 @@ def fetch_crypto_data(
     days_back: int = 730,
 ) -> OHLCV:
     """
-    Fetch crypto OHLCV from Binance via ccxt.
+    Fetch crypto OHLCV with exchange fallback chain.
+
+    Tries: Kraken → Coinbase → Binance → yfinance.
+    This ensures data works from US-based GitHub Actions runners
+    (Binance blocks US IPs with HTTP 451).
 
     Args:
         symbol: Trading pair (e.g., "BTC/USDT", "ETH/USDT", "SOL/USDT")
         timeframe: "1m", "5m", "15m", "1h", "4h", "1d"
         days_back: How many days of history to fetch.
-
-    No API key needed for public historical data.
     """
-    import ccxt
+    # Try ccxt exchanges first
+    df = _fetch_crypto_ccxt(symbol, timeframe, days_back)
+    source = "ccxt"
 
-    exchange = ccxt.binance({"enableRateLimit": True})
+    # Fallback to yfinance for daily data
+    if df is None or df.empty:
+        df = _fetch_crypto_yfinance(symbol, days_back)
+        source = "yfinance"
 
-    since = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp() * 1000)
+    if df is None or df.empty:
+        raise ValueError(f"No crypto data for {symbol} — all sources failed (ccxt + yfinance)")
 
-    all_candles = []
-    limit = 1000  # Binance max per request
-
-    while True:
-        candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
-        if not candles:
-            break
-        all_candles.extend(candles)
-        since = candles[-1][0] + 1  # Next ms after last candle
-        if len(candles) < limit:
-            break
-
-    if not all_candles:
-        raise ValueError(f"No crypto data for {symbol}")
-
-    df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.set_index("timestamp")
-    df = df.dropna()
-
-    log.info("Crypto %s: %d bars (%dd, %s)", symbol, len(df), days_back, timeframe)
-    return OHLCV(df=df, symbol=symbol, asset_class=AssetClass.CRYPTO, timeframe=timeframe, source="binance")
+    log.info("Crypto %s: %d bars (%dd, %s) via %s", symbol, len(df), days_back, timeframe, source)
+    return OHLCV(df=df, symbol=symbol, asset_class=AssetClass.CRYPTO, timeframe=timeframe, source=source)
 
 
 def fetch_crypto_intraday(
