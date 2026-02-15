@@ -13,6 +13,15 @@ ccxt>=4.0.0
 # Alpaca broker (paper + live trading)
 alpaca-py>=0.33.0
 
+# Signal processing (optional — wavelet denoising)
+PyWavelets>=1.4.0
+
+# HMM regime detection (optional — falls back to efficiency ratio)
+hmmlearn>=0.3.0
+
+# Meta-labeling + feature engineering (optional — falls back to numpy logistic regression)
+scikit-learn>=1.3.0
+
 # AI evaluation (optional — only used with --ai-eval flag)
 anthropic>=0.43.0
 openai>=1.58.1

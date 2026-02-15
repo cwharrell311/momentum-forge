@@ -49,6 +49,7 @@ def fetch_stock_data(
     symbol: str,
     period: str = "2y",
     interval: str = "1d",
+    include_context: bool = False,
 ) -> OHLCV:
     """
     Fetch stock OHLCV from Yahoo Finance.
@@ -58,9 +59,13 @@ def fetch_stock_data(
         period: How far back ("1mo", "3mo", "6mo", "1y", "2y", "5y", "max")
         interval: Bar size ("1m", "5m", "15m", "1h", "1d", "1wk")
             Note: intraday data (1m-1h) limited to last 60 days on free tier.
+        include_context: If True, automatically fetch and merge market context
+            data (VIX, DXY, yields) into the OHLCV DataFrame. Only applies to
+            daily bars — intraday bars skip context to avoid misaligned joins.
 
     Returns:
-        OHLCV with standardized DataFrame.
+        OHLCV with standardized DataFrame. When include_context=True, the
+        DataFrame also contains: vix, dxy, yield_10y, yield_3m, yield_spread.
     """
     import yfinance as yf
 
@@ -87,6 +92,15 @@ def fetch_stock_data(
         df.index = df.index.tz_convert("UTC")
     else:
         df.index = df.index.tz_localize("UTC")
+
+    # Optionally merge cross-asset market context (VIX, DXY, yields)
+    if include_context and interval in ("1d", "1wk"):
+        try:
+            context = fetch_market_context(period=period)
+            df = add_context_to_ohlcv(df, context)
+            log.info("Stock %s: merged market context (%d context rows)", symbol, len(context))
+        except Exception as e:
+            log.warning("Stock %s: failed to merge market context: %s", symbol, e)
 
     log.info("Stock %s: %d bars (%s, %s)", symbol, len(df), period, interval)
     return OHLCV(df=df, symbol=symbol, asset_class=AssetClass.STOCK, timeframe=interval, source="yfinance")
@@ -128,6 +142,213 @@ def fetch_stock_intraday(
 
     log.info("Stock intraday %s: %d bars (%dd, %s)", symbol, len(df), actual_days, interval)
     return OHLCV(df=df, symbol=symbol, asset_class=AssetClass.STOCK, timeframe=interval, source="yfinance")
+
+
+# ── Cross-Asset Context Data ──
+
+
+def fetch_market_context(period: str = "2y") -> pd.DataFrame:
+    """
+    Fetch macro market context: VIX, Dollar Index, Treasury yields.
+
+    This provides regime-level information that individual asset OHLCV cannot:
+    - VIX: volatility regime (calm < 15, elevated 15-25, crisis > 25)
+    - DXY: dollar strength (risk-on/off proxy)
+    - 10Y yield: rate environment (rising = tightening)
+    - 3M yield: risk-free rate proxy for Sharpe calculations
+    - Yield spread (10Y - 3M): inversion signals recession risk
+
+    All data is free from yfinance — no API keys needed.
+
+    Args:
+        period: How far back ("1mo", "3mo", "6mo", "1y", "2y", "5y", "max")
+
+    Returns:
+        DataFrame indexed by date with columns:
+        vix, dxy, yield_10y, yield_3m, yield_spread
+    """
+    import yfinance as yf
+
+    tickers = {
+        "^VIX": "vix",
+        "DX-Y.NYB": "dxy",
+        "^TNX": "yield_10y",
+        "^IRX": "yield_3m",
+    }
+
+    frames: dict[str, pd.Series] = {}
+
+    for yf_symbol, col_name in tickers.items():
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period=period)
+            if hist.empty:
+                log.warning("Market context: no data for %s, skipping", yf_symbol)
+                continue
+            series = hist["Close"].copy()
+            series.index = series.index.tz_localize(None) if series.index.tz is None else series.index.tz_convert("UTC").tz_localize(None)
+            series.name = col_name
+            frames[col_name] = series
+        except Exception as e:
+            log.warning("Market context: failed to fetch %s (%s): %s", yf_symbol, col_name, e)
+
+    if not frames:
+        raise ValueError("Failed to fetch any market context data (VIX, DXY, yields)")
+
+    # Combine all series into one DataFrame, aligned by date
+    context_df = pd.DataFrame(frames)
+    context_df.index.name = "date"
+    context_df = context_df.sort_index()
+
+    # Forward-fill gaps (weekends, holidays) within each column
+    context_df = context_df.ffill()
+
+    # Compute yield spread (10Y - 3M) — classic recession indicator
+    if "yield_10y" in context_df.columns and "yield_3m" in context_df.columns:
+        context_df["yield_spread"] = context_df["yield_10y"] - context_df["yield_3m"]
+    else:
+        context_df["yield_spread"] = np.nan
+
+    log.info(
+        "Market context: %d rows, columns=%s, range=%s to %s",
+        len(context_df),
+        list(context_df.columns),
+        context_df.index.min().strftime("%Y-%m-%d") if len(context_df) > 0 else "N/A",
+        context_df.index.max().strftime("%Y-%m-%d") if len(context_df) > 0 else "N/A",
+    )
+    return context_df
+
+
+def add_context_to_ohlcv(ohlcv_df: pd.DataFrame, context_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge cross-asset market context into an asset's OHLCV DataFrame.
+
+    Left-joins context data (VIX, DXY, yields) onto the asset's OHLCV by date,
+    then forward-fills missing context values so weekends/holidays don't leave NaNs.
+
+    After merging, strategies can use the context columns as features for
+    regime detection (e.g., "don't go long when VIX > 30 and yield curve inverted").
+
+    Args:
+        ohlcv_df: Asset OHLCV DataFrame (indexed by timestamp, may be tz-aware).
+        context_df: Market context DataFrame from fetch_market_context()
+            (indexed by tz-naive date).
+
+    Returns:
+        Copy of ohlcv_df with added columns: vix, dxy, yield_10y, yield_3m,
+        yield_spread. Missing values are forward-filled.
+    """
+    result = ohlcv_df.copy()
+
+    # Normalize the OHLCV index to tz-naive dates for joining
+    if result.index.tz is not None:
+        join_dates = result.index.tz_convert("UTC").tz_localize(None).normalize()
+    else:
+        join_dates = result.index.normalize()
+
+    # Build a date-keyed lookup from context
+    context_cols = [c for c in context_df.columns if c in ("vix", "dxy", "yield_10y", "yield_3m", "yield_spread")]
+
+    for col in context_cols:
+        if col in context_df.columns:
+            # Map context values onto OHLCV dates
+            mapping = context_df[col]
+            result[col] = join_dates.map(mapping)
+
+    # Forward-fill to cover any dates where context was missing (holidays etc.)
+    for col in context_cols:
+        if col in result.columns:
+            result[col] = result[col].ffill()
+
+    log.info(
+        "Context merge: added %d context columns to %d OHLCV rows",
+        len(context_cols),
+        len(result),
+    )
+    return result
+
+
+def fetch_multi_timeframe(
+    symbol: str,
+    period: str = "2y",
+    asset_class: str = "stock",
+) -> pd.DataFrame:
+    """
+    Fetch daily OHLCV and compute weekly aggregate features for multi-timeframe analysis.
+
+    Many strategies benefit from knowing the macro trend direction — e.g.,
+    "only take long day-trades when the weekly trend is bullish." This function
+    provides that by resampling daily data to weekly and merging key weekly
+    indicators back onto the daily DataFrame.
+
+    Added columns:
+    - close_weekly_ma: 10-period weekly moving average of close (smoothed macro trend)
+    - weekly_momentum: weekly close percentage change (1-week return)
+    - weekly_trend: True when weekly close > weekly 10-period MA (bullish macro trend)
+
+    Args:
+        symbol: Ticker symbol (e.g., "SPY", "AAPL", "BTC/USDT")
+        period: How far back ("1mo", "3mo", "6mo", "1y", "2y", "5y", "max")
+        asset_class: "stock" or "crypto" — determines which fetcher to use
+
+    Returns:
+        Daily OHLCV DataFrame with weekly trend columns added.
+    """
+    # Fetch daily data using the appropriate fetcher
+    if asset_class == "crypto":
+        # Convert period string to days_back for crypto fetcher
+        period_to_days = {
+            "1mo": 30, "3mo": 90, "6mo": 180,
+            "1y": 365, "2y": 730, "5y": 1825, "max": 3650,
+        }
+        days_back = period_to_days.get(period, 730)
+        ohlcv = fetch_crypto_data(symbol=symbol, timeframe="1d", days_back=days_back)
+    else:
+        ohlcv = fetch_stock_data(symbol=symbol, period=period, interval="1d")
+
+    daily = ohlcv.df.copy()
+
+    # Resample to weekly bars (week ending Friday)
+    try:
+        weekly = daily.resample("W-FRI").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna()
+    except Exception as e:
+        log.warning("Multi-timeframe %s: weekly resample failed: %s", symbol, e)
+        # Return daily data without weekly features rather than crashing
+        daily["close_weekly_ma"] = np.nan
+        daily["weekly_momentum"] = np.nan
+        daily["weekly_trend"] = False
+        return daily
+
+    # Compute weekly indicators
+    weekly["close_weekly_ma"] = weekly["close"].rolling(window=10, min_periods=1).mean()
+    weekly["weekly_momentum"] = weekly["close"].pct_change()
+    weekly["weekly_trend"] = weekly["close"] > weekly["close_weekly_ma"]
+
+    # Map weekly values back to daily rows (each day gets its week's values)
+    # Use reindex + ffill so every daily row gets the most recent weekly value
+    weekly_features = weekly[["close_weekly_ma", "weekly_momentum", "weekly_trend"]].copy()
+
+    # Reindex weekly features to daily dates and forward-fill
+    daily_index = daily.index
+    weekly_features_reindexed = weekly_features.reindex(daily_index, method="ffill")
+
+    daily["close_weekly_ma"] = weekly_features_reindexed["close_weekly_ma"]
+    daily["weekly_momentum"] = weekly_features_reindexed["weekly_momentum"]
+    daily["weekly_trend"] = weekly_features_reindexed["weekly_trend"].fillna(False)
+
+    log.info(
+        "Multi-timeframe %s: %d daily bars + weekly features (weekly_trend True %.0f%% of days)",
+        symbol,
+        len(daily),
+        daily["weekly_trend"].mean() * 100 if len(daily) > 0 else 0,
+    )
+    return daily
 
 
 # ── Crypto Data (ccxt with exchange fallback + yfinance) ──

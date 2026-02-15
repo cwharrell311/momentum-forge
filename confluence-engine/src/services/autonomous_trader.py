@@ -879,12 +879,11 @@ def _instantiate_strategy(class_name: str, params: dict):
     # Also include backtesting strategies
     try:
         from src.backtesting.strategies import (
-            OpeningRangeBreakout, GapFade,
-            DualMomentum, CryptoMomentum, CryptoMeanReversion,
+            GapFade, DualMomentum, CryptoMomentum, CryptoMeanReversion,
             PredictionMomentum, PredictionReversion, AdaptiveTrend,
+            DenoisedMomentum, HurstAdaptive, EntropyRegimeStrategy,
         )
         class_map.update({
-            "OpeningRangeBreakout": OpeningRangeBreakout,
             "GapFade": GapFade,
             "DualMomentum": DualMomentum,
             "CryptoMomentum": CryptoMomentum,
@@ -892,6 +891,9 @@ def _instantiate_strategy(class_name: str, params: dict):
             "PredictionMomentum": PredictionMomentum,
             "PredictionReversion": PredictionReversion,
             "AdaptiveTrend": AdaptiveTrend,
+            "DenoisedMomentum": DenoisedMomentum,
+            "HurstAdaptive": HurstAdaptive,
+            "EntropyRegimeStrategy": EntropyRegimeStrategy,
         })
     except ImportError:
         pass

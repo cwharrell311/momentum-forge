@@ -2,10 +2,10 @@
 Extended strategy library for multi-asset day trading.
 
 Strategies are organized by asset class and market regime:
-- Stock strategies: VWAP reversion, ORB, gap fade, momentum
-- Crypto strategies: Funding rate, liquidation levels, momentum
+- Stock strategies: Gap fade, momentum, denoised momentum
+- Crypto strategies: Momentum, mean reversion, denoised momentum
 - Polymarket strategies: Probability momentum, mean reversion
-- Cross-asset: Regime-adaptive, volatility harvesting
+- Cross-asset: Regime-adaptive, Hurst-adaptive, entropy-filtered
 
 Each strategy implements the BaseStrategy interface:
 - generate_signals(df) -> list of (index, side, confidence, reason)
@@ -83,92 +83,6 @@ class BaseStrategy(ABC):
 # ═══════════════════════════════════════════════════════════════
 # STOCK STRATEGIES
 # ═══════════════════════════════════════════════════════════════
-
-
-class OpeningRangeBreakout(BaseStrategy):
-    """
-    Opening Range Breakout (ORB) — classic day trading strategy.
-
-    Define the opening range as the high/low of the first N bars.
-    Go long on breakout above the range, short on breakdown below.
-    Stop loss at the opposite side of the range.
-
-    Best on 5m-15m bars. Uses the first 30-60 minutes as the opening range.
-    Parameters: range_bars (how many bars define the range), atr_filter.
-    """
-
-    def __init__(self, range_bars: int = 6, atr_filter: float = 1.0):
-        self.range_bars = range_bars  # e.g., 6 x 5m bars = 30 min opening range
-        self.atr_filter = atr_filter
-
-    def meta(self) -> StrategyMeta:
-        return StrategyMeta(
-            name="opening_range_breakout",
-            asset_classes=["stock"],
-            param_count=2,
-            param_ranges={"range_bars": (3, 12), "atr_filter": (0.5, 2.0)},
-            description="Breakout above/below opening range — trend continuation play",
-        )
-
-    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
-        signals = []
-
-        # Group bars by trading day
-        df = df.copy()
-        df["date"] = df.index.date
-
-        for date, day_df in df.groupby("date"):
-            if len(day_df) < self.range_bars + 2:
-                continue
-
-            # Opening range = first N bars
-            opening = day_df.iloc[:self.range_bars]
-            range_high = opening["high"].max()
-            range_low = opening["low"].min()
-            range_size = range_high - range_low
-
-            if range_size <= 0:
-                continue
-
-            # ATR filter: skip if opening range is too narrow (no volatility)
-            if self.atr_filter > 0:
-                atr_period = min(14, len(day_df) - 1)
-                if atr_period < 2:
-                    continue
-
-            # Scan remaining bars for breakout
-            triggered = False
-            for i in range(self.range_bars, len(day_df)):
-                if triggered:
-                    break
-
-                bar = day_df.iloc[i]
-                global_idx = df.index.get_loc(day_df.index[i])
-
-                # Breakout above range
-                if bar["close"] > range_high:
-                    signals.append(Signal(
-                        bar_index=global_idx,
-                        side=Side.LONG,
-                        confidence=min(1.0, (bar["close"] - range_high) / range_size),
-                        reason=f"ORB long: close={bar['close']:.2f} > range_high={range_high:.2f}",
-                        stop_loss_pct=(range_high - range_low) / bar["close"] * 100,
-                        take_profit_pct=(range_high - range_low) / bar["close"] * 100 * 2,
-                    ))
-                    triggered = True
-                # Breakdown below range
-                elif bar["close"] < range_low:
-                    signals.append(Signal(
-                        bar_index=global_idx,
-                        side=Side.SHORT,
-                        confidence=min(1.0, (range_low - bar["close"]) / range_size),
-                        reason=f"ORB short: close={bar['close']:.2f} < range_low={range_low:.2f}",
-                        stop_loss_pct=(range_high - range_low) / bar["close"] * 100,
-                        take_profit_pct=(range_high - range_low) / bar["close"] * 100 * 2,
-                    ))
-                    triggered = True
-
-        return signals
 
 
 class GapFade(BaseStrategy):
@@ -675,6 +589,504 @@ class AdaptiveTrend(BaseStrategy):
 
 
 # ═══════════════════════════════════════════════════════════════
+# SIGNAL-PROCESSING STRATEGIES
+# ═══════════════════════════════════════════════════════════════
+
+
+class DenoisedMomentum(BaseStrategy):
+    """
+    Momentum on denoised price signals.
+
+    The #1 problem with daily momentum: noise drowns the signal.
+    Solution from signal processing: denoise FIRST, then compute momentum.
+
+    Uses Kalman filter (from aerospace/control theory) to extract the
+    true trend from noisy daily prices, then trades momentum on the
+    clean signal. Same math as GPS tracking satellites.
+
+    Parameters: fast_period, slow_period, noise_ratio.
+    """
+
+    def __init__(self, fast_period: int = 10, slow_period: int = 40, noise_ratio: float = 1.0):
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.noise_ratio = noise_ratio  # Higher = more smoothing
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="denoised_momentum",
+            asset_classes=["stock", "crypto"],
+            param_count=3,
+            param_ranges={"fast_period": (5, 20), "slow_period": (20, 80), "noise_ratio": (0.5, 3.0)},
+            description="Momentum on Kalman-denoised prices — signal processing meets trading",
+        )
+
+    def _kalman_filter(self, prices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Run Kalman filter on price series.
+
+        State vector: [level, trend]
+        Transition: level_t = level_{t-1} + trend_{t-1}
+                    trend_t = trend_{t-1}
+        Observation: price_t = level_t + noise
+
+        Returns:
+            filtered_prices: Kalman-smoothed price levels
+            velocities: Kalman-estimated trend (velocity) at each bar
+        """
+        n = len(prices)
+        filtered = np.zeros(n)
+        velocity = np.zeros(n)
+
+        # Transition matrix F = [[1, 1], [0, 1]]
+        # Observation matrix H = [1, 0]
+
+        # Initial state
+        x = np.array([prices[0], 0.0])  # [level, trend]
+
+        # Initial covariance (high uncertainty)
+        P = np.array([[1000.0, 0.0],
+                       [0.0, 1000.0]])
+
+        # Process noise covariance Q — scaled by noise_ratio
+        # Higher noise_ratio = trust the model less = more smoothing
+        q_level = 0.01 * self.noise_ratio
+        q_trend = 0.001 * self.noise_ratio
+        Q = np.array([[q_level, 0.0],
+                       [0.0, q_trend]])
+
+        # Measurement noise R — estimate from price variance
+        price_std = np.std(np.diff(prices[:min(50, n)])) if n > 2 else 1.0
+        R = (price_std * self.noise_ratio) ** 2
+        if R < 1e-10:
+            R = 1.0  # Guard against zero variance
+
+        filtered[0] = prices[0]
+        velocity[0] = 0.0
+
+        for i in range(1, n):
+            # === PREDICT ===
+            # x_pred = F @ x
+            x_pred = np.array([x[0] + x[1], x[1]])
+
+            # P_pred = F @ P @ F.T + Q
+            P_pred = np.array([
+                [P[0, 0] + P[0, 1] + P[1, 0] + P[1, 1] + Q[0, 0], P[0, 1] + P[1, 1] + Q[0, 1]],
+                [P[1, 0] + P[1, 1] + Q[1, 0], P[1, 1] + Q[1, 1]],
+            ])
+
+            # === UPDATE ===
+            # Innovation: y = z - H @ x_pred (H = [1, 0])
+            y = prices[i] - x_pred[0]
+
+            # Innovation covariance: S = H @ P_pred @ H.T + R
+            S = P_pred[0, 0] + R
+
+            # Kalman gain: K = P_pred @ H.T / S
+            K = np.array([P_pred[0, 0] / S, P_pred[1, 0] / S])
+
+            # Updated state: x = x_pred + K * y
+            x = x_pred + K * y
+
+            # Updated covariance: P = (I - K @ H) @ P_pred
+            P = np.array([
+                [(1 - K[0]) * P_pred[0, 0], (1 - K[0]) * P_pred[0, 1]],
+                [-K[1] * P_pred[0, 0] + P_pred[1, 0], -K[1] * P_pred[0, 1] + P_pred[1, 1]],
+            ])
+
+            filtered[i] = x[0]
+            velocity[i] = x[1]
+
+        return filtered, velocity
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        if len(df) < self.slow_period + 5:
+            return signals
+
+        closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
+
+        # Run Kalman filter on close prices
+        filtered, velocity = self._kalman_filter(closes)
+
+        # Compute ATR for stops
+        for i in range(self.slow_period + 1, len(df)):
+            # Fast and slow momentum on FILTERED prices
+            if filtered[i - self.fast_period] == 0 or filtered[i - self.slow_period] == 0:
+                continue
+
+            fast_mom = (filtered[i] - filtered[i - self.fast_period]) / filtered[i - self.fast_period]
+            slow_mom = (filtered[i] - filtered[i - self.slow_period]) / filtered[i - self.slow_period]
+
+            # ATR for position sizing and stops
+            recent_tr = [
+                max(highs[j] - lows[j],
+                    abs(highs[j] - closes[j - 1]),
+                    abs(lows[j] - closes[j - 1]))
+                for j in range(max(1, i - 14), i + 1)
+            ]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.02
+            atr_pct = atr / closes[i] * 100
+
+            # LONG: both momentums positive AND Kalman velocity confirms uptrend
+            if fast_mom > 0 and slow_mom > 0 and velocity[i] > 0:
+                conf = min(1.0, (fast_mom + slow_mom) * 5 + abs(velocity[i]) / closes[i] * 100)
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.LONG,
+                    confidence=min(1.0, conf),
+                    reason=(
+                        f"Denoised momentum long: fast={fast_mom:.4f}, slow={slow_mom:.4f}, "
+                        f"velocity={velocity[i]:.3f}"
+                    ),
+                    stop_loss_pct=max(1.0, atr_pct * 2),     # 2x ATR stop
+                    take_profit_pct=max(1.5, atr_pct * 3),    # 3x ATR target
+                ))
+            # SHORT: both momentums negative AND Kalman velocity confirms downtrend
+            elif fast_mom < 0 and slow_mom < 0 and velocity[i] < 0:
+                conf = min(1.0, (abs(fast_mom) + abs(slow_mom)) * 5 + abs(velocity[i]) / closes[i] * 100)
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.SHORT,
+                    confidence=min(1.0, conf),
+                    reason=(
+                        f"Denoised momentum short: fast={fast_mom:.4f}, slow={slow_mom:.4f}, "
+                        f"velocity={velocity[i]:.3f}"
+                    ),
+                    stop_loss_pct=max(1.0, atr_pct * 2),
+                    take_profit_pct=max(1.5, atr_pct * 3),
+                ))
+
+        return signals
+
+
+class HurstAdaptive(BaseStrategy):
+    """
+    Adapts strategy type based on Hurst exponent.
+
+    H > 0.55: trending — use momentum (buy breakouts)
+    H < 0.45: mean-reverting — use reversion (buy dips)
+    H ~ 0.50: random walk — DON'T TRADE
+
+    The Hurst exponent comes from hydrology (Harold Hurst studying
+    Nile river flood patterns). It measures persistence vs anti-persistence.
+
+    Parameters: hurst_lookback, momentum_period.
+    """
+
+    def __init__(self, hurst_lookback: int = 100, momentum_period: int = 20):
+        self.hurst_lookback = hurst_lookback
+        self.momentum_period = momentum_period
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="hurst_adaptive",
+            asset_classes=["stock", "crypto"],
+            param_count=2,
+            param_ranges={"hurst_lookback": (50, 200), "momentum_period": (10, 40)},
+            description="Adapts between momentum and mean-reversion based on Hurst exponent",
+        )
+
+    @staticmethod
+    def _compute_hurst(series: np.ndarray) -> float:
+        """
+        Compute Hurst exponent using rescaled range (R/S) analysis.
+
+        Returns:
+            H ~ 0.5: random walk (no memory)
+            H > 0.5: persistent (trending)
+            H < 0.5: anti-persistent (mean-reverting)
+        """
+        n = len(series)
+        if n < 20:
+            return 0.5  # Default to random walk for insufficient data
+
+        # Use multiple sub-series lengths for R/S regression
+        max_k = min(n // 2, 128)
+        sizes = []
+        rs_values = []
+
+        for size in [int(n / d) for d in range(2, min(n // 10 + 1, 20))]:
+            if size < 10:
+                continue
+
+            rs_list = []
+            for start in range(0, n - size + 1, size):
+                chunk = series[start:start + size]
+                mean = np.mean(chunk)
+                deviations = chunk - mean
+                cumulative = np.cumsum(deviations)
+                R = np.max(cumulative) - np.min(cumulative)
+                S = np.std(chunk, ddof=1)
+                if S > 0:
+                    rs_list.append(R / S)
+
+            if rs_list:
+                sizes.append(size)
+                rs_values.append(np.mean(rs_list))
+
+        if len(sizes) < 2:
+            return 0.5
+
+        # log-log regression: log(R/S) = H * log(n) + c
+        log_sizes = np.log(np.array(sizes, dtype=float))
+        log_rs = np.log(np.array(rs_values, dtype=float))
+
+        # Simple linear regression for slope (= Hurst exponent)
+        n_pts = len(log_sizes)
+        sum_x = np.sum(log_sizes)
+        sum_y = np.sum(log_rs)
+        sum_xy = np.sum(log_sizes * log_rs)
+        sum_x2 = np.sum(log_sizes ** 2)
+
+        denom = n_pts * sum_x2 - sum_x ** 2
+        if abs(denom) < 1e-10:
+            return 0.5
+
+        H = (n_pts * sum_xy - sum_x * sum_y) / denom
+
+        # Clamp to reasonable range
+        return max(0.01, min(0.99, H))
+
+    @staticmethod
+    def _compute_rsi(closes: np.ndarray, period: int = 14) -> float:
+        """Compute RSI at the last bar of the given closes array."""
+        if len(closes) < period + 1:
+            return 50.0  # Neutral
+
+        deltas = np.diff(closes[-(period + 1):])
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - 100.0 / (1.0 + rs)
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        min_bars = max(self.hurst_lookback, self.momentum_period * 3) + 1
+        if len(df) < min_bars:
+            return signals
+
+        closes = df["close"].values
+
+        fast_ma_period = max(5, self.momentum_period // 2)
+        slow_ma_period = self.momentum_period
+
+        for i in range(min_bars, len(df)):
+            # Rolling Hurst exponent
+            window = closes[i - self.hurst_lookback:i + 1]
+            H = self._compute_hurst(window)
+
+            if H > 0.55:
+                # TRENDING regime — use momentum (fast MA vs slow MA crossover)
+                fast_ma = np.mean(closes[i - fast_ma_period + 1:i + 1])
+                slow_ma = np.mean(closes[i - slow_ma_period + 1:i + 1])
+                prev_fast_ma = np.mean(closes[i - fast_ma_period:i])
+                prev_slow_ma = np.mean(closes[i - slow_ma_period:i])
+
+                # Bullish crossover
+                if fast_ma > slow_ma and prev_fast_ma <= prev_slow_ma:
+                    signals.append(Signal(
+                        bar_index=i,
+                        side=Side.LONG,
+                        confidence=min(1.0, (H - 0.5) * 5),
+                        reason=f"Hurst trending (H={H:.3f}): MA crossover long",
+                        stop_loss_pct=2.0,
+                        take_profit_pct=4.0,
+                    ))
+                # Bearish crossover
+                elif fast_ma < slow_ma and prev_fast_ma >= prev_slow_ma:
+                    signals.append(Signal(
+                        bar_index=i,
+                        side=Side.SHORT,
+                        confidence=min(1.0, (H - 0.5) * 5),
+                        reason=f"Hurst trending (H={H:.3f}): MA crossover short",
+                        stop_loss_pct=2.0,
+                        take_profit_pct=4.0,
+                    ))
+
+            elif H < 0.45:
+                # MEAN-REVERTING regime — use RSI reversion
+                rsi = self._compute_rsi(closes[:i + 1], period=14)
+
+                if rsi < 30:
+                    signals.append(Signal(
+                        bar_index=i,
+                        side=Side.LONG,
+                        confidence=min(1.0, (0.5 - H) * 5 * (1 - rsi / 50)),
+                        reason=f"Hurst mean-revert (H={H:.3f}): RSI={rsi:.1f} oversold",
+                        stop_loss_pct=1.5,
+                        take_profit_pct=2.5,
+                    ))
+                elif rsi > 70:
+                    signals.append(Signal(
+                        bar_index=i,
+                        side=Side.SHORT,
+                        confidence=min(1.0, (0.5 - H) * 5 * (rsi / 50 - 1)),
+                        reason=f"Hurst mean-revert (H={H:.3f}): RSI={rsi:.1f} overbought",
+                        stop_loss_pct=1.5,
+                        take_profit_pct=2.5,
+                    ))
+
+            # H between 0.45 and 0.55: random walk — no edge, skip
+
+        return signals
+
+
+class EntropyRegimeStrategy(BaseStrategy):
+    """
+    Only trades when the market is predictable (low entropy).
+
+    Permutation entropy (from neuroscience/EEG analysis) measures
+    how random a time series is. We only trade when entropy is low
+    (market has structure we can exploit).
+
+    Combines entropy regime filter with simple momentum signal.
+
+    Parameters: entropy_lookback, entropy_threshold, momentum_period.
+    """
+
+    def __init__(self, entropy_lookback: int = 50, entropy_threshold: float = 0.7,
+                 momentum_period: int = 20):
+        self.entropy_lookback = entropy_lookback
+        self.entropy_threshold = entropy_threshold  # Below this = predictable
+        self.momentum_period = momentum_period
+
+    def meta(self) -> StrategyMeta:
+        return StrategyMeta(
+            name="entropy_regime",
+            asset_classes=["stock", "crypto"],
+            param_count=3,
+            param_ranges={
+                "entropy_lookback": (30, 100),
+                "entropy_threshold": (0.5, 0.85),
+                "momentum_period": (10, 40),
+            },
+            description="Only trade when permutation entropy is low — skip random noise, exploit structure",
+        )
+
+    @staticmethod
+    def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> float:
+        """
+        Compute normalised permutation entropy of a time series.
+
+        Based on Bandt & Pompe (2002). Maps the series into ordinal
+        patterns and computes Shannon entropy of the pattern distribution.
+
+        Returns:
+            0.0 = perfectly predictable (single repeating pattern)
+            1.0 = maximally random (all patterns equally likely)
+        """
+        from math import factorial, log
+
+        n = len(series)
+        if n < (order - 1) * delay + order:
+            return 1.0  # Not enough data, assume random
+
+        # Extract ordinal patterns
+        pattern_counts: dict[tuple, int] = {}
+        total = 0
+
+        for i in range(n - (order - 1) * delay):
+            # Extract the pattern indices
+            window = [series[i + j * delay] for j in range(order)]
+            # Convert to ordinal pattern (rank order)
+            pattern = tuple(sorted(range(order), key=lambda k: window[k]))
+            pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
+            total += 1
+
+        if total == 0:
+            return 1.0
+
+        # Shannon entropy of pattern distribution
+        max_patterns = factorial(order)
+        entropy = 0.0
+        for count in pattern_counts.values():
+            p = count / total
+            if p > 0:
+                entropy -= p * log(p)
+
+        # Normalize by max possible entropy: log(order!)
+        max_entropy = log(max_patterns)
+        if max_entropy == 0:
+            return 1.0
+
+        return entropy / max_entropy
+
+    def generate_signals(self, df: pd.DataFrame) -> list[Signal]:
+        signals = []
+        min_bars = max(self.entropy_lookback, self.momentum_period * 2) + 1
+        if len(df) < min_bars:
+            return signals
+
+        closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
+
+        for i in range(min_bars, len(df)):
+            # Compute permutation entropy on recent returns
+            window = closes[i - self.entropy_lookback:i + 1]
+            returns = np.diff(window) / window[:-1]
+            pe = self._permutation_entropy(returns, order=3, delay=1)
+
+            # Only trade when entropy is LOW (market has exploitable structure)
+            if pe >= self.entropy_threshold:
+                continue  # Too random, no edge
+
+            # Simple momentum signal on raw prices
+            if closes[i - self.momentum_period] == 0:
+                continue
+            mom = (closes[i] - closes[i - self.momentum_period]) / closes[i - self.momentum_period]
+
+            # ATR for stops
+            recent_tr = [
+                max(highs[j] - lows[j],
+                    abs(highs[j] - closes[j - 1]),
+                    abs(lows[j] - closes[j - 1]))
+                for j in range(max(1, i - 14), i + 1)
+            ]
+            atr = np.mean(recent_tr) if recent_tr else closes[i] * 0.02
+            atr_pct = atr / closes[i] * 100
+
+            # Confidence scales with how far below the entropy threshold we are
+            entropy_edge = (self.entropy_threshold - pe) / self.entropy_threshold
+
+            if mom > 0.01:  # Positive momentum + low entropy
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.LONG,
+                    confidence=min(1.0, entropy_edge * abs(mom) * 20),
+                    reason=(
+                        f"Entropy regime long: PE={pe:.3f} (thresh={self.entropy_threshold}), "
+                        f"mom={mom:.4f}"
+                    ),
+                    stop_loss_pct=max(1.0, atr_pct * 2),
+                    take_profit_pct=max(1.5, atr_pct * 3),
+                ))
+            elif mom < -0.01:  # Negative momentum + low entropy
+                signals.append(Signal(
+                    bar_index=i,
+                    side=Side.SHORT,
+                    confidence=min(1.0, entropy_edge * abs(mom) * 20),
+                    reason=(
+                        f"Entropy regime short: PE={pe:.3f} (thresh={self.entropy_threshold}), "
+                        f"mom={mom:.4f}"
+                    ),
+                    stop_loss_pct=max(1.0, atr_pct * 2),
+                    take_profit_pct=max(1.5, atr_pct * 3),
+                ))
+
+        return signals
+
+
+# ═══════════════════════════════════════════════════════════════
 # STRATEGY REGISTRY
 # ═══════════════════════════════════════════════════════════════
 
@@ -683,13 +1095,13 @@ def get_all_strategies(asset_class: str | None = None) -> list[BaseStrategy]:
     """Get all available strategies, optionally filtered by asset class.
 
     VWAPReversion removed — negative Sharpe across all assets, unfixable.
+    OpeningRangeBreakout removed — fundamentally broken on daily bars (needs intraday data).
     DualMomentum expanded with longer lookback periods (60/90/120 day).
     CryptoMomentum expanded with tuned parameters.
+    Added: DenoisedMomentum (Kalman-filtered), HurstAdaptive, EntropyRegimeStrategy.
     """
     all_strategies = [
-        # Stocks — momentum-focused (reversion strategies removed)
-        OpeningRangeBreakout(range_bars=6),
-        OpeningRangeBreakout(range_bars=12),
+        # Stocks — momentum-focused (ORB removed: needs intraday bars)
         GapFade(min_gap_pct=0.5, max_gap_pct=3.0),
         GapFade(min_gap_pct=1.0, max_gap_pct=5.0),
         DualMomentum(fast_period=10, slow_period=40),
@@ -709,9 +1121,19 @@ def get_all_strategies(asset_class: str | None = None) -> list[BaseStrategy]:
         PredictionMomentum(lookback=6, threshold_change=0.08),
         PredictionReversion(spike_threshold=0.10, lookback=6),
         PredictionReversion(spike_threshold=0.15, lookback=4),
-        # Universal
+        # Universal — adaptive
         AdaptiveTrend(er_period=10),
         AdaptiveTrend(er_period=15),
+        # Signal-processing strategies — denoised momentum
+        DenoisedMomentum(fast_period=10, slow_period=40, noise_ratio=1.0),   # Default
+        DenoisedMomentum(fast_period=5, slow_period=20, noise_ratio=0.5),    # Fast/responsive
+        DenoisedMomentum(fast_period=15, slow_period=60, noise_ratio=2.0),   # Slow/smooth
+        # Hurst-adaptive — auto-switches momentum vs reversion
+        HurstAdaptive(hurst_lookback=100, momentum_period=20),
+        HurstAdaptive(hurst_lookback=150, momentum_period=30),    # Longer lookback
+        # Entropy regime — only trade when market is predictable
+        EntropyRegimeStrategy(entropy_lookback=50, entropy_threshold=0.7, momentum_period=20),
+        EntropyRegimeStrategy(entropy_lookback=80, entropy_threshold=0.65, momentum_period=30),
     ]
 
     if asset_class:
