@@ -24,23 +24,23 @@ on:
       period:
         description: "Stock data period"
         required: false
-        default: "2y"
+        default: "10y"
         type: choice
         options:
-          - "6mo"
           - "1y"
           - "2y"
           - "5y"
+          - "10y"
       crypto_days:
         description: "Days of crypto history"
         required: false
-        default: "365"
+        default: "1825"
         type: choice
         options:
-          - "90"
-          - "180"
           - "365"
           - "730"
+          - "1825"
+          - "3650"
       mode:
         description: "Analysis mode"
         required: false
@@ -86,7 +86,7 @@ jobs:
       - name: Run stock backtest
         run: |
           STOCKS="${{ inputs.stocks || 'SPY QQQ IWM DIA TLT IEF SHY HYG GLD SLV USO XLF XLE XLK SMH TQQQ EEM AAPL NVDA TSLA META AMZN MSFT AMD JPM' }}"
-          PERIOD="${{ inputs.period || '2y' }}"
+          PERIOD="${{ inputs.period || '10y' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"
 
@@ -118,11 +118,19 @@ jobs:
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           import json
           data = json.load(open('results-stocks.json'))
-          results = sorted(data.get('results', []),
-              key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
-              reverse=True)
-          for r in results[:10]:
-              print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          results = data.get('results', [])
+          # Only show strategies with 30+ trades (statistically meaningful)
+          viable = [r for r in results if int(str(r.get('total_trades', '0'))) >= 30]
+          viable.sort(key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')), reverse=True)
+          if viable:
+              for r in viable[:15]:
+                  print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          else:
+              # Fallback: show all if none have 30+ trades, but flag it
+              all_sorted = sorted(results, key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')), reverse=True)
+              print(f"| **NOTE** | | | **No strategies reached 30+ trades** | | | |")
+              for r in all_sorted[:10]:
+                  print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
           PYEOF
           fi
 
@@ -161,7 +169,7 @@ jobs:
       - name: Run crypto backtest
         run: |
           CRYPTO="${{ inputs.crypto || 'BTC/USDT ETH/USDT SOL/USDT BNB/USDT XRP/USDT ADA/USDT AVAX/USDT DOGE/USDT' }}"
-          DAYS="${{ inputs.crypto_days || '365' }}"
+          DAYS="${{ inputs.crypto_days || '1825' }}"
           MODE="${{ inputs.mode || 'walk-forward' }}"
           CAPITAL="${{ inputs.capital || '100000' }}"
 
@@ -193,11 +201,17 @@ jobs:
             python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           import json
           data = json.load(open('results-crypto.json'))
-          results = sorted(data.get('results', []),
-              key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')),
-              reverse=True)
-          for r in results[:10]:
-              print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          results = data.get('results', [])
+          viable = [r for r in results if int(str(r.get('total_trades', '0'))) >= 30]
+          viable.sort(key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')), reverse=True)
+          if viable:
+              for r in viable[:15]:
+                  print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
+          else:
+              all_sorted = sorted(results, key=lambda x: float(str(x.get('sharpe', '0')).replace('+', '')), reverse=True)
+              print(f"| **NOTE** | | | **No strategies reached 30+ trades** | | | |")
+              for r in all_sorted[:10]:
+                  print(f"| {r.get('strategy','?')} | {r.get('symbol','?')} | {r.get('sharpe','?')} | {r.get('cagr','?')} | {r.get('max_drawdown','?')} | {r.get('win_rate','?')} | {r.get('total_trades','?')} |")
           PYEOF
           fi
 
