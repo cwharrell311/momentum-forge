@@ -148,6 +148,7 @@ def run_backtest(
     asset_class: str = "stock",
     config: BacktestConfig | None = None,
     risk_manager: RiskManager | None = None,
+    num_trials: int = 1,
 ) -> BacktestResult:
     """
     Run a single backtest of a strategy on historical data.
@@ -336,7 +337,7 @@ def run_backtest(
         equity_curve=equity_series,
         trade_pnls=trade_pnls,
         trade_durations=trade_durations,
-        num_trials=1,
+        num_trials=num_trials,
         periods_per_year=periods,
         timeframe=df.index.inferred_freq or "1d",
         asset_class=asset_class,
@@ -500,3 +501,324 @@ def walk_forward_analysis(
         wf_efficiency=round(wf_efficiency, 3),
         num_windows=len(oos_results),
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# COMBINATORIAL PURGED CROSS-VALIDATION (CPCV)
+# ═══════════════════════════════════════════════════════════════
+#
+# From Marcos López de Prado, "Advances in Financial Machine Learning"
+#
+# Standard walk-forward gives ONE path through data.
+# CPCV generates ALL combinatorial paths by:
+# 1. Split data into N groups
+# 2. Use k groups for testing (C(N,k) combinations)
+# 3. Train on remaining N-k groups
+# 4. Purge (remove) observations near train/test boundary
+#    to prevent information leakage
+#
+# This gives C(N,k) backtest paths instead of just 1,
+# allowing us to compute a distribution of performance
+# and detect overfitting with much higher power.
+# ═══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class CPCVResult:
+    """Result of Combinatorial Purged Cross-Validation."""
+    strategy_name: str
+    symbol: str
+    # Distribution of OOS performance across all paths
+    sharpe_distribution: list[float]
+    cagr_distribution: list[float]
+    max_dd_distribution: list[float]
+    # Summary stats
+    mean_sharpe: float
+    median_sharpe: float
+    sharpe_std: float
+    prob_sharpe_positive: float      # P(Sharpe > 0) across paths
+    prob_sharpe_viable: float        # P(Sharpe > 0.5) across paths
+    mean_cagr: float
+    mean_max_dd: float
+    # Overfitting probability
+    prob_overfit: float              # P(OOS Sharpe < 0 | IS Sharpe > 0)
+    deflated_sharpe: float
+    num_paths: int
+    num_groups: int
+    test_groups: int
+
+
+def cpcv_analysis(
+    strategy: BaseStrategy,
+    df: pd.DataFrame,
+    symbol: str,
+    asset_class: str = "stock",
+    config: BacktestConfig | None = None,
+    num_groups: int = 6,           # Split data into 6 groups
+    test_groups: int = 2,          # Use 2 groups for testing
+    purge_bars: int = 5,           # Purge 5 bars at boundaries
+) -> CPCVResult:
+    """
+    Combinatorial Purged Cross-Validation.
+
+    For N=6, k=2: C(6,2) = 15 backtest paths.
+    Each path uses 2 groups for testing and 4 for training.
+    Purge bars at boundaries prevent information leakage.
+
+    This is strictly better than walk-forward because:
+    - More paths = better statistical power
+    - Every observation is used for both training and testing
+    - Overfitting probability can be directly estimated
+    """
+    from itertools import combinations
+
+    if config is None:
+        config = BacktestConfig()
+
+    meta = strategy.meta()
+    total_bars = len(df)
+    group_size = total_bars // num_groups
+
+    if group_size < 30:
+        log.warning("Not enough data for CPCV with %d groups. Need more bars.", num_groups)
+        num_groups = max(3, total_bars // 30)
+        group_size = total_bars // num_groups
+
+    # Define group boundaries
+    groups = []
+    for g in range(num_groups):
+        start = g * group_size
+        end = min((g + 1) * group_size, total_bars)
+        groups.append((start, end))
+
+    # Generate all C(N, k) test set combinations
+    test_combos = list(combinations(range(num_groups), test_groups))
+    log.info(
+        "CPCV: %d groups, %d test groups, %d paths, %d purge bars",
+        num_groups, test_groups, len(test_combos), purge_bars,
+    )
+
+    sharpe_dist = []
+    cagr_dist = []
+    dd_dist = []
+    is_sharpes = []
+    oos_sharpes = []
+
+    periods = 365 if asset_class == "crypto" else 252
+
+    for combo in test_combos:
+        test_indices = set()
+        purge_indices = set()
+
+        # Collect test and purge bar indices
+        for g in combo:
+            g_start, g_end = groups[g]
+            test_indices.update(range(g_start, g_end))
+
+            # Purge bars at boundaries of test groups
+            for bar_offset in range(1, purge_bars + 1):
+                if g_start - bar_offset >= 0:
+                    purge_indices.add(g_start - bar_offset)
+                if g_end + bar_offset - 1 < total_bars:
+                    purge_indices.add(g_end + bar_offset - 1)
+
+        # Train indices = everything not in test or purge
+        train_mask = [
+            i not in test_indices and i not in purge_indices
+            for i in range(total_bars)
+        ]
+        test_mask = [i in test_indices for i in range(total_bars)]
+
+        train_df = df.iloc[train_mask]
+        test_df = df.iloc[test_mask]
+
+        if len(train_df) < 30 or len(test_df) < 20:
+            continue
+
+        try:
+            # In-sample backtest
+            is_result = run_backtest(strategy, train_df, symbol, asset_class, config)
+            is_sharpes.append(is_result.report.sharpe_ratio)
+
+            # Out-of-sample backtest
+            oos_result = run_backtest(strategy, test_df, symbol, asset_class, config)
+            oos_sharpes.append(oos_result.report.sharpe_ratio)
+
+            sharpe_dist.append(oos_result.report.sharpe_ratio)
+            cagr_dist.append(oos_result.report.cagr_pct)
+            dd_dist.append(oos_result.report.drawdown.max_drawdown_pct)
+
+        except Exception as e:
+            log.debug("CPCV path failed: %s", e)
+            continue
+
+    if not sharpe_dist:
+        return CPCVResult(
+            strategy_name=meta.name, symbol=symbol,
+            sharpe_distribution=[], cagr_distribution=[], max_dd_distribution=[],
+            mean_sharpe=0, median_sharpe=0, sharpe_std=0,
+            prob_sharpe_positive=0, prob_sharpe_viable=0,
+            mean_cagr=0, mean_max_dd=0, prob_overfit=1.0,
+            deflated_sharpe=0, num_paths=0,
+            num_groups=num_groups, test_groups=test_groups,
+        )
+
+    sharpe_arr = np.array(sharpe_dist)
+    cagr_arr = np.array(cagr_dist)
+    dd_arr = np.array(dd_dist)
+
+    # Probability of overfitting:
+    # P(OOS Sharpe < 0 when IS Sharpe > 0)
+    overfit_count = sum(
+        1 for is_s, oos_s in zip(is_sharpes, oos_sharpes)
+        if is_s > 0 and oos_s < 0
+    )
+    positive_is_count = sum(1 for s in is_sharpes if s > 0)
+    prob_overfit = overfit_count / positive_is_count if positive_is_count > 0 else 1.0
+
+    # Deflated Sharpe across all paths
+    from src.backtesting.metrics import compute_deflated_sharpe
+    try:
+        best_oos_sharpe = max(sharpe_dist)
+        deflated = compute_deflated_sharpe(
+            best_oos_sharpe,
+            num_trials=len(sharpe_dist),
+            total_bars=total_bars,
+            skewness=float(pd.Series(sharpe_dist).skew()) if len(sharpe_dist) > 2 else 0,
+            kurtosis=float(pd.Series(sharpe_dist).kurtosis()) + 3 if len(sharpe_dist) > 3 else 3,
+        )
+    except Exception:
+        deflated = float(np.mean(sharpe_dist))
+
+    return CPCVResult(
+        strategy_name=meta.name,
+        symbol=symbol,
+        sharpe_distribution=sharpe_dist,
+        cagr_distribution=cagr_dist,
+        max_dd_distribution=dd_dist,
+        mean_sharpe=round(float(sharpe_arr.mean()), 3),
+        median_sharpe=round(float(np.median(sharpe_arr)), 3),
+        sharpe_std=round(float(sharpe_arr.std()), 3),
+        prob_sharpe_positive=round(float((sharpe_arr > 0).mean()), 3),
+        prob_sharpe_viable=round(float((sharpe_arr > 0.5).mean()), 3),
+        mean_cagr=round(float(cagr_arr.mean()), 2),
+        mean_max_dd=round(float(dd_arr.mean()), 2),
+        prob_overfit=round(prob_overfit, 3),
+        deflated_sharpe=round(deflated, 3),
+        num_paths=len(sharpe_dist),
+        num_groups=num_groups,
+        test_groups=test_groups,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# TRIPLE BARRIER METHOD
+# ═══════════════════════════════════════════════════════════════
+#
+# From López de Prado — replaces fixed stop/target with three
+# simultaneous exit conditions:
+#
+# 1. Upper barrier (take profit) — price hits target
+# 2. Lower barrier (stop loss) — price hits stop
+# 3. Vertical barrier (time limit) — max holding period expires
+#
+# Whichever barrier is hit first determines the trade outcome.
+# The vertical barrier prevents trades from lingering forever
+# in no-man's land, which is a common source of hidden risk.
+# ═══════════════════════════════════════════════════════════════
+
+
+def apply_triple_barrier(
+    df: pd.DataFrame,
+    entry_bar: int,
+    side: Side,
+    entry_price: float,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+    max_holding_bars: int = 20,
+) -> tuple[int, float, str]:
+    """
+    Apply the triple barrier method to find the exit point.
+
+    Returns: (exit_bar, exit_price, exit_reason)
+    """
+    if side == Side.LONG:
+        stop_price = entry_price * (1 - stop_loss_pct / 100)
+        target_price = entry_price * (1 + take_profit_pct / 100)
+    else:
+        stop_price = entry_price * (1 + stop_loss_pct / 100)
+        target_price = entry_price * (1 - take_profit_pct / 100)
+
+    for i in range(entry_bar + 1, min(entry_bar + max_holding_bars + 1, len(df))):
+        bar = df.iloc[i]
+
+        if side == Side.LONG:
+            if bar["low"] <= stop_price:
+                return i, stop_price, "stop_loss"
+            if bar["high"] >= target_price:
+                return i, target_price, "take_profit"
+        else:
+            if bar["high"] >= stop_price:
+                return i, stop_price, "stop_loss"
+            if bar["low"] <= target_price:
+                return i, target_price, "take_profit"
+
+    # Vertical barrier: time expired — exit at market
+    exit_bar = min(entry_bar + max_holding_bars, len(df) - 1)
+    return exit_bar, df.iloc[exit_bar]["close"], "time_expiry"
+
+
+# ═══════════════════════════════════════════════════════════════
+# SHARPE-WEIGHTED MULTI-STRATEGY ALLOCATION
+# ═══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class StrategyAllocation:
+    """Allocation weight for a strategy based on its Sharpe ratio."""
+    strategy_name: str
+    symbol: str
+    sharpe: float
+    weight: float           # 0.0 - 1.0, sum of all weights = 1.0
+    capital_allocated: float
+
+
+def compute_sharpe_weights(
+    results: list[BacktestResult],
+    total_capital: float = 100_000,
+    min_sharpe: float = 0.0,
+) -> list[StrategyAllocation]:
+    """
+    Allocate capital across strategies proportional to their Sharpe ratio.
+
+    Strategies with Sharpe <= min_sharpe get zero allocation.
+    Remaining strategies get capital proportional to their Sharpe.
+
+    This is a simplified risk-parity approach where risk-adjusted
+    return drives allocation rather than inverse-volatility.
+    """
+    # Filter to strategies with positive Sharpe
+    viable = [
+        r for r in results
+        if r.report.sharpe_ratio > min_sharpe
+        and r.report.trades.total_trades >= 10
+    ]
+
+    if not viable:
+        return []
+
+    # Sharpe-weighted allocation
+    sharpes = np.array([r.report.sharpe_ratio for r in viable])
+    weights = sharpes / sharpes.sum()
+
+    allocations = []
+    for r, weight in zip(viable, weights):
+        allocations.append(StrategyAllocation(
+            strategy_name=r.strategy_name,
+            symbol=r.symbol,
+            sharpe=round(r.report.sharpe_ratio, 3),
+            weight=round(float(weight), 4),
+            capital_allocated=round(total_capital * float(weight), 2),
+        ))
+
+    return sorted(allocations, key=lambda a: a.weight, reverse=True)

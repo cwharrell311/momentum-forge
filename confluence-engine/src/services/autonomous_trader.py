@@ -879,12 +879,11 @@ def _instantiate_strategy(class_name: str, params: dict):
     # Also include backtesting strategies
     try:
         from src.backtesting.strategies import (
-            VWAPReversion, OpeningRangeBreakout, GapFade,
+            OpeningRangeBreakout, GapFade,
             DualMomentum, CryptoMomentum, CryptoMeanReversion,
             PredictionMomentum, PredictionReversion, AdaptiveTrend,
         )
         class_map.update({
-            "VWAPReversion": VWAPReversion,
             "OpeningRangeBreakout": OpeningRangeBreakout,
             "GapFade": GapFade,
             "DualMomentum": DualMomentum,
